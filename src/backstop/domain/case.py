@@ -66,10 +66,15 @@ class Case:
     # What the network said, if it said anything. Parsed in diagnosis/advice.py.
     network: str | None = None
     advice_code: str | None = None
+    # Unstructured residual: a customer reply, a support note, a forwarded bank SMS.
+    # Only read by T3, and only when the gateway code itself explains nothing.
+    free_text: str | None = None
     arm: Arm = Arm.TREATED
     state: CaseState = CaseState.DETECTED
     cause: CauseClass = CauseClass.UNKNOWN
     recoverability: float = 0.0
+    # Which diagnosis tier produced `cause` — T0..T3. Lets the report slice lift by tier.
+    tier: str = ""
 
     retries_used: int = 0
     contacts_by_channel: dict[Channel, int] = field(default_factory=dict)

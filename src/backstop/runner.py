@@ -10,16 +10,19 @@ from __future__ import annotations
 
 import argparse
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from .diagnosis.cohort import CohortModel
-from .diagnosis.engine import DiagnosisEngine
+from .diagnosis.engine import DiagnosisEngine, LLMDiagnoser
+from .diagnosis.llm import ClaudeDiagnoser
+from .diagnosis.taxonomy import CODE_TO_CAUSE
 from .domain.case import Case
 from .domain.events import CaseEvent, EventKind
-from .domain.types import Arm, CaseState, Disposition
+from .domain.types import Arm, CaseState, CauseClass, Disposition
 from .execution.outbox import Outbox
-from .ledger.store import InMemoryLedger
+from .ledger.sqlite import SqliteLedger
+from .ledger.store import InMemoryLedger, LedgerStore
 from .measurement.assignment import assign
 from .measurement.report import Restraint, render
 from .planner.actions import ActionKind
@@ -32,27 +35,54 @@ from .sim.generator import generate
 from .sim.world import World
 
 CONTACT_KINDS = CONTACT_ACTIONS
+# Gateway codes T1 can read. Anything else with free text attached is the T3 residual.
+_KNOWN_CODES = frozenset(CODE_TO_CAUSE)
+
+
+@dataclass(slots=True)
+class LLMStats:
+    """What T3 cost and what it resolved. Zero everywhere when the model is off."""
+
+    enabled: bool = False
+    model: str = ""
+    calls: int = 0
+    resolved: int = 0      # UNKNOWN -> a named cause, with grounded evidence
+    refusals: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    residual_cases: int = 0  # cases that reached T3 (or would have, if it were on)
 
 
 @dataclass(slots=True)
 class BatchResult:
     cases: list[Case]
-    ledger: InMemoryLedger
+    ledger: LedgerStore
     restraint: Restraint
     action_cost: int
     config_version: str
     dispatched: int
     deduped: int
     cohorts_learned: int
+    llm: LLMStats = field(default_factory=LLMStats)
 
 
-def run(n_cases: int, horizon_days: int, holdout: float, seed: int) -> BatchResult:
+def run(
+    n_cases: int,
+    horizon_days: int,
+    holdout: float,
+    seed: int,
+    *,
+    ledger: LedgerStore | None = None,
+    llm: LLMDiagnoser | None = None,
+) -> BatchResult:
     start = datetime(2026, 9, 1, 9, 0)
     rng = random.Random(seed)
 
-    ledger = InMemoryLedger()
+    ledger = ledger if ledger is not None else InMemoryLedger()
     cohort = CohortModel()
-    diagnoser = DiagnosisEngine(cohort)
+    diagnoser = DiagnosisEngine(cohort, llm=llm)
+    llm_stats = LLMStats(enabled=llm is not None,
+                         model=getattr(llm, "model", type(llm).__name__ if llm else ""))
     policy = PolicyEngine(PolicyConfig())
     planner = Planner(epsilon=0.1, rng=random.Random(seed + 1))
     world = World(horizon_days=horizon_days, seed=seed + 2)
@@ -71,11 +101,19 @@ def run(n_cases: int, horizon_days: int, holdout: float, seed: int) -> BatchResu
             CaseEvent(case.case_id, EventKind.DETECTED, case.created_at,
                       payload={"amount_paise": case.amount_paise, "arm": case.arm.value})
         )
-        dx = diagnoser.diagnose(case)
+        dx = diagnoser.diagnose(case, case.free_text)
         case.cause = dx.cause_class
         case.recoverability = dx.recoverability
+        case.tier = dx.tier
         diagnoses[case.case_id] = dx
         world.admit(case, dx.cause_class)
+
+        # The residual: T1 could not read the code and the case carries free text.
+        # This is the only population the model is ever shown.
+        if case.free_text and case.failure_code not in _KNOWN_CODES:
+            llm_stats.residual_cases += 1
+            if dx.tier == "T3" and dx.cause_class is not CauseClass.UNKNOWN:
+                llm_stats.resolved += 1
 
         if case.arm is Arm.HOLDOUT:
             continue  # never diagnosed into the pipeline, never touched
@@ -88,12 +126,17 @@ def run(n_cases: int, horizon_days: int, holdout: float, seed: int) -> BatchResu
                 restraint.fee_events_avoided += 1
 
         case.transition(CaseState.DIAGNOSED)
+        payload = {"cause": dx.cause_class.value, "tier": dx.tier,
+                   "recoverability": round(dx.recoverability, 4),
+                   "posterior_n": dx.posterior_n}
+        if dx.tier == "T3":
+            # A model diagnosis lands in the ledger with the spans that justify it,
+            # so the replay shows what the model read — not just what it concluded.
+            payload["model"] = llm_stats.model
+            payload["evidence"] = [e.raw_value for e in dx.evidence if e.tier == "T3"]
         ledger.append(
             CaseEvent(case.case_id, EventKind.DIAGNOSED, case.created_at,
-                      payload={"cause": dx.cause_class.value, "tier": dx.tier,
-                               "recoverability": round(dx.recoverability, 4),
-                               "posterior_n": dx.posterior_n},
-                      actor="diagnosis")
+                      payload=payload, actor="diagnosis")
         )
 
     for day in range(horizon_days):
@@ -211,6 +254,12 @@ def run(n_cases: int, horizon_days: int, holdout: float, seed: int) -> BatchResu
             if case.arm is Arm.TREATED:
                 _observe(cohort, case, diagnoses, recovered=False)
 
+    if isinstance(llm, ClaudeDiagnoser):
+        llm_stats.calls = llm.calls
+        llm_stats.refusals = llm.refusals
+        llm_stats.input_tokens = llm.input_tokens
+        llm_stats.output_tokens = llm.output_tokens
+
     return BatchResult(
         cases=cases,
         ledger=ledger,
@@ -220,6 +269,7 @@ def run(n_cases: int, horizon_days: int, holdout: float, seed: int) -> BatchResu
         dispatched=outbox.dispatched,
         deduped=outbox.deduped,
         cohorts_learned=cohort.cohorts_seen(),
+        llm=llm_stats,
     )
 
 
@@ -258,14 +308,36 @@ def main() -> int:
                     help="max stopped cases embedded in the HTML export")
     ap.add_argument("--html-timelines", type=int, default=250,
                     help="max cases carrying a full ledger replay in the export")
+    ap.add_argument("--ledger", choices=("memory", "sqlite"), default="memory",
+                    help="where the append-only ledger lives for this run")
+    ap.add_argument("--db", metavar="PATH", default="backstop.db",
+                    help="SQLite file for --ledger sqlite (default: backstop.db)")
+    ap.add_argument("--llm", choices=("auto", "claude", "none"), default="auto",
+                    help="T3 diagnoser for the free-text residual. auto = Claude when "
+                         "ANTHROPIC_API_KEY is set, otherwise none (the default NoLLM)")
+    ap.add_argument("--llm-max", type=int, default=400,
+                    help="hard cap on model calls per batch; beyond it T3 answers UNKNOWN")
     args = ap.parse_args()
 
-    result = run(args.cases, args.days, args.holdout, args.seed)
+    ledger: LedgerStore
+    if args.ledger == "sqlite":
+        ledger = SqliteLedger(args.db)
+    else:
+        ledger = InMemoryLedger()
 
-    print(render(result.cases, result.restraint, result.action_cost))
+    llm: LLMDiagnoser | None = None
+    if args.llm in ("auto", "claude"):
+        llm = ClaudeDiagnoser.from_env(max_calls=args.llm_max)
+        if llm is None and args.llm == "claude":
+            ap.error("--llm claude needs ANTHROPIC_API_KEY and `pip install -e \".[llm]\"`")
+
+    result = run(args.cases, args.days, args.holdout, args.seed, ledger=ledger, llm=llm)
+
+    print(render(result.cases, result.restraint, result.action_cost, llm=result.llm))
     print(f"ledger events: {len(result.ledger):,}   "
           f"dispatched: {result.dispatched:,}   deduped: {result.deduped:,}   "
-          f"cohorts learned: {result.cohorts_learned:,}")
+          f"cohorts learned: {result.cohorts_learned:,}"
+          + (f"   ledger: {args.db}" if args.ledger == "sqlite" else ""))
 
     if args.html:
         data = extract(result.cases, result.ledger,

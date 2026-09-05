@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from ..diagnosis.llm import ClaudeDiagnoser
 from ..domain.case import Case
 from ..domain.types import Arm, CaseState, rupees
 from ..measurement.report import compute_lift, decompose
@@ -82,16 +83,27 @@ def create_batch(
     days: int = Query(14, ge=1, le=60),
     holdout: float = Query(0.10, ge=0.02, le=0.5),
     seed: int = Query(42),
+    llm: str = Query("auto", pattern="^(auto|claude|none)$"),
+    llm_max: int = Query(400, ge=0, le=5000),
 ) -> dict[str, Any]:
     """Run a batch synchronously and return its summary.
 
     Synchronous on purpose: a 6,000-case batch takes about a second, and a job queue
-    would be infrastructure the reviewer has to run for no benefit.
+    would be infrastructure the reviewer has to run for no benefit. With `llm=claude`
+    it is as slow as the residual is large — the console shows the call count.
     """
-    result = run(cases, days, holdout, seed)
+    diagnoser = None
+    if llm in ("auto", "claude"):
+        diagnoser = ClaudeDiagnoser.from_env(max_calls=llm_max)
+        if diagnoser is None and llm == "claude":
+            raise HTTPException(
+                400, "llm=claude needs ANTHROPIC_API_KEY on the API process and the "
+                     "[llm] extra installed")
+    result = run(cases, days, holdout, seed, llm=diagnoser)
     batch_id = f"b{len(_ORDER) + 1:03d}-{seed}-{cases}"
     stored = StoredBatch(batch_id, {"cases": cases, "days": days,
-                                    "holdout": holdout, "seed": seed}, result)
+                                    "holdout": holdout, "seed": seed,
+                                    "llm": result.llm.model or "none"}, result)
     _store(stored)
     return summary(batch_id)
 
@@ -144,7 +156,18 @@ def summary(batch_id: str) -> dict[str, Any]:
                 ("cause", lambda c: c.cause.value),
                 ("amount_band", lambda c: c.amount_band()),
                 ("issuer", lambda c: c.issuer),
+                ("tier", lambda c: c.tier or "n/a"),
             )
+        },
+        "llm": {
+            "enabled": b.result.llm.enabled,
+            "model": b.result.llm.model,
+            "residual_cases": b.result.llm.residual_cases,
+            "calls": b.result.llm.calls,
+            "resolved": b.result.llm.resolved,
+            "refusals": b.result.llm.refusals,
+            "input_tokens": b.result.llm.input_tokens,
+            "output_tokens": b.result.llm.output_tokens,
         },
         "restraint": {
             "suppressed": r.suppressed,
@@ -251,6 +274,8 @@ def case_replay(batch_id: str, case_id: str) -> dict[str, Any]:
             "instrument": case.instrument,
             "failure_code": case.failure_code,
             "cause": case.cause.value,
+            "tier": case.tier,
+            "free_text": case.free_text,
             "state": case.state.value,
             "arm": case.arm.value,
             "stopping_rule": case.stopping_rule,

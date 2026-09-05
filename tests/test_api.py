@@ -47,7 +47,7 @@ def test_lift_carries_its_interval_and_verdict(batch):
 
 
 def test_decomposition_covers_every_dimension(batch):
-    assert set(batch["decomposition"]) == {"cause", "amount_band", "issuer"}
+    assert set(batch["decomposition"]) == {"cause", "amount_band", "issuer", "tier"}
     for buckets in batch["decomposition"].values():
         assert buckets
         for lf in buckets.values():

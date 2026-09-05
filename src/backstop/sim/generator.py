@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from ..domain.case import Case
-from ..domain.types import CaseType
+from ..domain.types import CaseType, CauseClass
 
 ISSUERS = ("HDFC", "ICICI", "SBI", "AXIS", "KOTAK", "PAYTM")
 
@@ -109,7 +109,60 @@ def _weighted(rng: random.Random, table: tuple[tuple[str, float], ...]) -> str:
     return table[-1][0]
 
 
-def generate(n: int, *, start: datetime, seed: int = 42) -> list[Case]:
+# --- The T3 residual -------------------------------------------------------------
+#
+# A share of real declines arrive with a gateway code that maps to nothing useful
+# ("payment_failed", an unmapped issuer response) but with text attached: the customer
+# replied on WhatsApp, support left a note, the customer forwarded a bank SMS. T1 reads
+# UNKNOWN; only the text says what happened. This is the population the model sees.
+#
+# The snippet corpus is the latent truth: `latent_cause()` inverts it, so the simulated
+# world's behaviour for a residual case does not depend on whether the model was on.
+# Without that, switching T3 on would change customer behaviour, not just diagnosis.
+
+RESIDUAL_SHARE = 0.07
+
+UNMAPPED_CODES = ("payment_failed", "issuer_response_unmapped", "bank_error_91", "BAD_REQUEST_ERROR")
+
+FREE_TEXT_CORPUS: tuple[tuple[str, CauseClass], ...] = (
+    ("Salary comes on 1st, balance was low that day. Please retry after 1st.", CauseClass.INSUFFICIENT_FUNDS),
+    ("Account had only 200 rs when it tried. Will add money by Friday.", CauseClass.INSUFFICIENT_FUNDS),
+    ("customer says limit exhausted on the credit card till statement date", CauseClass.INSUFFICIENT_FUNDS),
+    ("My card got blocked last week, bank is sending new one. Old card won't work.", CauseClass.EXPIRED_INSTRUMENT),
+    ("This card expired in Aug. I have new card number, how to update?", CauseClass.EXPIRED_INSTRUMENT),
+    ("fwd: Dear Customer, your debit card ending 4471 has been deactivated. - HDFC Bank", CauseClass.EXPIRED_INSTRUMENT),
+    ("Bank app was showing server busy, will try after some time.", CauseClass.ISSUER_UNAVAILABLE),
+    ("Payment page kept loading after UPI PIN and then timed out. Money not debited.", CauseClass.ISSUER_UNAVAILABLE),
+    ("support note: SBI netbanking outage 14:00-16:30, several failures in that window", CauseClass.ISSUER_UNAVAILABLE),
+    ("I didn't get any OTP so I closed the page.", CauseClass.AUTH_ABANDONED),
+    ("app crashed when it asked for UPI PIN, did not complete", CauseClass.AUTH_ABANDONED),
+    ("got distracted, will do it tonight", CauseClass.AUTH_ABANDONED),
+    ("fwd: Transaction declined due to security reasons. Contact your bank. - ICICI", CauseClass.RISK_DECLINE),
+    ("bank called me asking if I did this transaction, they blocked it as suspicious", CauseClass.RISK_DECLINE),
+    ("I never got the SMS about this month's debit, that's why it failed. Send notice first.", CauseClass.MANDATE_NOT_NOTIFIED),
+    ("no pre-debit notification received for the autopay, bank rejected", CauseClass.MANDATE_NOT_NOTIFIED),
+    ("Bank just said declined, no reason given. Tried twice.", CauseClass.DO_NOT_HONOUR),
+    ("ok", CauseClass.UNKNOWN),
+    ("?", CauseClass.UNKNOWN),
+    ("will check and revert", CauseClass.UNKNOWN),
+)
+
+_TRUTH_BY_TEXT: dict[str, CauseClass] = {text: cause for text, cause in FREE_TEXT_CORPUS}
+
+
+def latent_cause(case: Case) -> CauseClass | None:
+    """The simulator's ground truth for a residual case, or None for a normal one.
+
+    Only the world may call this. The agent never sees it.
+    """
+    if case.free_text is None:
+        return None
+    return _TRUTH_BY_TEXT.get(case.free_text)
+
+
+def generate(
+    n: int, *, start: datetime, seed: int = 42, residual_share: float = RESIDUAL_SHARE
+) -> list[Case]:
     rng = random.Random(seed)
     cases: list[Case] = []
 
@@ -126,6 +179,14 @@ def generate(n: int, *, start: datetime, seed: int = 42) -> list[Case]:
         issuer = rng.choice(ISSUERS)
         network = NETWORK_BY_ISSUER[issuer]
         failure_code = _weighted(rng, codes)
+        advice_code = _advice_for(rng, failure_code, network)
+        free_text: str | None = None
+
+        if rng.random() < residual_share:
+            # The code says nothing; the text says everything (or nothing).
+            failure_code = rng.choice(UNMAPPED_CODES)
+            advice_code = None
+            free_text, _ = rng.choice(FREE_TEXT_CORPUS)
 
         cases.append(
             Case(
@@ -138,7 +199,8 @@ def generate(n: int, *, start: datetime, seed: int = 42) -> list[Case]:
                 failure_code=failure_code,
                 created_at=start + timedelta(minutes=rng.randrange(0, 60 * 24)),
                 network=network,
-                advice_code=_advice_for(rng, failure_code, network),
+                advice_code=advice_code,
+                free_text=free_text,
             )
         )
 

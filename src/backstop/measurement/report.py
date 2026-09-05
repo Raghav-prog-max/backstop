@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..domain.case import Case
 from ..domain.types import Arm, CaseState, Paise, rupees
@@ -115,7 +116,12 @@ def decompose(cases: list[Case], key) -> dict[str, Lift]:
     return {k: compute_lift(v) for k, v in sorted(buckets.items())}
 
 
-def render(cases: list[Case], restraint: Restraint, action_cost_paise: Paise) -> str:
+def render(
+    cases: list[Case], restraint: Restraint, action_cost_paise: Paise, *, llm: Any = None
+) -> str:
+    """`llm` is the runner's LLMStats (duck-typed here to keep this module free of the
+    runner). None or `enabled=False` renders the T3 block as off — still printed, so a
+    reader sees that the model was absent rather than wondering where it went."""
     overall = compute_lift(cases)
     t, h = overall.treated, overall.holdout
     out: list[str] = []
@@ -144,6 +150,9 @@ def render(cases: list[Case], restraint: Restraint, action_cost_paise: Paise) ->
         ("by cause", lambda c: c.cause.value),
         ("by amount band", lambda c: c.amount_band()),
         ("by issuer", lambda c: c.issuer),
+        # T3 rows here are the model's contribution, measured the same way as
+        # everything else: against the holdout, with an interval.
+        ("by diagnosis tier", lambda c: c.tier or "n/a"),
     ):
         w(f"  {label}")
         for name, lf in decompose(cases, fn).items():
@@ -162,5 +171,18 @@ def render(cases: list[Case], restraint: Restraint, action_cost_paise: Paise) ->
     w("  denied / deferred by rule")
     for rule_id, count in sorted(restraint.denied_by_rule.items()):
         w(f"    {rule_id:<24} {count:>14,}")
+    w("")
+    w("MODEL (T3 - free-text residual only)")
+    if llm is None or not getattr(llm, "enabled", False):
+        residual = getattr(llm, "residual_cases", 0) if llm is not None else 0
+        w(f"  status                            off  (NoLLM: residual diagnosed UNKNOWN)")
+        w(f"  residual cases            {residual:>14,}")
+    else:
+        w(f"  model                     {llm.model:>14}")
+        w(f"  residual cases            {llm.residual_cases:>14,}")
+        w(f"  model calls               {llm.calls:>14,}")
+        w(f"  resolved to a cause       {llm.resolved:>14,}")
+        w(f"  refusals                  {llm.refusals:>14,}")
+        w(f"  tokens in / out           {llm.input_tokens:>7,} / {llm.output_tokens:<6,}")
     w("")
     return "\n".join(out)

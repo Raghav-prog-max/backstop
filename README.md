@@ -37,6 +37,37 @@ python -m backstop.runner --cases 6000 --days 14 --html why_not.html
 python -m pytest -q
 ```
 
+### Persist the ledger (optional)
+
+The default ledger is in memory. `--ledger sqlite` writes the same append-only
+`case_event` table to a file instead, so the audit trail outlives the process and can
+be queried with plain `sqlite3`:
+
+```bash
+python -m backstop.runner --cases 6000 --days 14 --ledger sqlite --db backstop.db
+```
+
+### Turn the model on (optional)
+
+T3 — the only tier that calls a model — runs on the **free-text residual**: cases whose
+gateway code maps to nothing (`payment_failed`, an unmapped issuer response) but which
+carry a customer reply, a support note or a forwarded bank SMS. About 7% of the
+synthetic batch. Everything else is diagnosed by code tables and the cohort posterior,
+and no model call is ever made for it.
+
+```bash
+python -m pip install -e ".[llm]"
+export ANTHROPIC_API_KEY=sk-ant-...
+python -m backstop.runner --cases 6000 --days 14 --llm claude
+```
+
+`--llm auto` (the default) uses Claude when a key is present and `NoLLM` otherwise —
+either way the report's `MODEL` block says which, and the `by diagnosis tier` slice
+shows T3's lift measured against the same holdout as everything else. `--llm-max`
+caps calls per batch. A model answer whose quoted evidence is not actually in the
+text is discarded as `UNKNOWN`, whatever its confidence field claims
+(`diagnosis/llm.py`, `tests/test_t3.py`).
+
 ### The console (optional)
 
 A React operator console over a FastAPI surface — batch report, Why-not view and
@@ -69,9 +100,10 @@ restraint and proof.
 > The model proposes; a deterministic policy engine disposes.
 
 So the LLM is one narrow, schema-constrained component on the residual cases that
-structured signals cannot classify (`diagnosis/engine.py`, tier T3, default `NoLLM`).
-Everything that decides whether to spend a contact, a retry, or a phone call is
-ordinary versioned, unit-tested code in `policy/`.
+structured signals cannot classify (`diagnosis/llm.py`, tier T3 — `claude-opus-5` with
+a closed cause enum and mandatory verbatim evidence spans; `NoLLM` when no key is set).
+It names a cause. It never picks an action. Everything that decides whether to spend a
+contact, a retry, or a phone call is ordinary versioned, unit-tested code in `policy/`.
 
 ## Where the acceptance criteria live
 
@@ -188,5 +220,8 @@ Two statistical choices that matter:
 - [x] **Regulatory constants verified** (2026-09-05) — `cfg-2026.09.1`. Sources are
       cited in `policy/config.py` and each value is pinned by a test in
       `tests/test_regulatory.py`. Re-check before submission; these move.
-- [ ] Swap the in-memory ledger for `SqliteLedger` or Postgres in the runner.
+- [x] `SqliteLedger` available in the runner (`--ledger sqlite`). Postgres stays a seam.
+- [x] T3 wired to Claude (`--llm claude`), grounded-evidence contract tested without network.
+- [ ] Run one batch with `--llm claude` and keep the report — the `MODEL` block and the
+      `by diagnosis tier` slice are the evidence that the model earns its place.
 - [ ] Record the 5-minute pitch video against a live batch run and the Why-not view.

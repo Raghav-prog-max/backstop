@@ -24,6 +24,7 @@ from ..domain.case import Case
 from ..domain.types import CauseClass
 from ..execution.outbox import ActionResult
 from ..planner.actions import Action, ActionKind
+from .generator import latent_cause
 
 # Probability a case recovers on its own over the horizon, with no contact at all.
 # This is the number that makes gross recovery a lie.
@@ -70,7 +71,11 @@ class World:
         self._latent: dict[str, Latent] = {}
 
     def admit(self, case: Case, cause: CauseClass) -> None:
-        total = SELF_HEAL_OVER_HORIZON.get(cause, 0.12)
+        # A residual case's true cause lives in the generator's corpus, not in whatever
+        # the agent diagnosed. Otherwise turning T3 on would change how customers
+        # behave, and the measured T3 lift would be a simulator artefact.
+        truth = latent_cause(case)
+        total = SELF_HEAL_OVER_HORIZON.get(truth if truth is not None else cause, 0.12)
         # Convert a horizon probability into a per-day hazard.
         daily = 1.0 - (1.0 - total) ** (1.0 / self.horizon_days)
         self._latent[case.case_id] = Latent(

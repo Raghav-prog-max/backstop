@@ -5,6 +5,8 @@ import {
   type CasePage,
   type CaseRow,
   type Lift,
+  type LlmMode,
+  type LlmStats,
   type Replay,
   type RuleRollup,
   type Summary,
@@ -12,7 +14,7 @@ import {
 
 type Tab = "report" | "whynot";
 
-const DEFAULTS = { cases: 6000, days: 14, holdout: 0.1, seed: 42 };
+const DEFAULTS = { cases: 6000, days: 14, holdout: 0.1, seed: 42, llm: "auto" as LlmMode };
 
 export default function App() {
   const [params, setParams] = useState(DEFAULTS);
@@ -95,6 +97,17 @@ export default function App() {
               onChange={(e) => setParams({ ...params, seed: Number(e.target.value) })}
             />
           </label>
+          <label className="field" title="T3 diagnoser for the free-text residual. auto = Claude when the API process has ANTHROPIC_API_KEY, otherwise NoLLM.">
+            model
+            <select
+              value={params.llm}
+              onChange={(e) => setParams({ ...params, llm: e.target.value as LlmMode })}
+            >
+              <option value="auto">auto</option>
+              <option value="claude">claude</option>
+              <option value="none">none</option>
+            </select>
+          </label>
           <button
             className="primary"
             disabled={running}
@@ -157,6 +170,39 @@ export default function App() {
 
 /* ---------------------------------------------------------------- report -- */
 
+/** T3 is the only tier that calls a model, and it only ever sees the free-text
+ *  residual. Shown whether or not the model was on, so an absent model reads as
+ *  "off" rather than as a missing panel. */
+function ModelPanel({ llm }: { llm: LlmStats }) {
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <h2>Model (T3 — free-text residual only)</h2>
+      {llm.enabled ? (
+        <>
+          <Row k="Model" v={llm.model} />
+          <Row k="Residual cases" v={llm.residual_cases.toLocaleString()} />
+          <Row k="Model calls" v={llm.calls.toLocaleString()} />
+          <Row k="Resolved to a cause" v={llm.resolved.toLocaleString()} />
+          <Row k="Refusals" v={llm.refusals.toLocaleString()} />
+          <Row
+            k="Tokens in / out"
+            v={`${llm.input_tokens.toLocaleString()} / ${llm.output_tokens.toLocaleString()}`}
+          />
+        </>
+      ) : (
+        <>
+          <Row k="Status" v="off — NoLLM, residual diagnosed unknown" />
+          <Row k="Residual cases" v={llm.residual_cases.toLocaleString()} />
+        </>
+      )}
+      <p className="muted" style={{ fontSize: 13, marginBottom: 0 }}>
+        The model names a cause and never picks an action. Its lift is in the
+        <em> by tier</em> table below, measured against the same holdout as everything else.
+      </p>
+    </div>
+  );
+}
+
 function BatchReport({ summary }: { summary: Summary }) {
   const h = summary.headline;
   const r = summary.restraint;
@@ -199,6 +245,8 @@ function BatchReport({ summary }: { summary: Summary }) {
           <Row k="Ledger events" v={summary.ledger_events.toLocaleString()} />
         </div>
       </div>
+
+      <ModelPanel llm={summary.llm} />
 
       {Object.entries(summary.decomposition).map(([dim, buckets]) => (
         <div className="panel" key={dim} style={{ marginTop: 18 }}>
@@ -508,8 +556,13 @@ function ReplayPanel({ replay }: { replay: Replay }) {
       <p className="muted mono" style={{ fontSize: 11.5, marginTop: 0 }}>
         {c.amount} · {c.issuer} {c.network ? `(${c.network})` : ""} · {c.failure_code}
         {c.advice_code ? ` · advice ${c.advice_code}` : " · no network advice"} ·{" "}
-        {c.retries} retries · {c.contacts} contacts
+        {c.cause} via {c.tier || "n/a"} · {c.retries} retries · {c.contacts} contacts
       </p>
+      {c.free_text && (
+        <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>
+          <b>free text</b> (what T3 was shown): “{c.free_text}”
+        </p>
+      )}
       {replay.events.map((e, i) => (
         <div className="ev" key={i}>
           <span className="t">{e.ts}</span>

@@ -2,6 +2,18 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "backstop-api",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "backstop.api"],
+      "port": 8010
+    },
+    {
+      "name": "backstop-console",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "console", "run", "dev"],
+      "port": 5180
+    },
+    {
       "name": "backstop-view",
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "3600"],

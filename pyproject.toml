@@ -15,6 +15,9 @@ dependencies = []
 # SEAM: the production adapters named in the architecture doc. Not needed to run
 # `python -m backstop.runner`, which uses the in-memory ledger and the dry-run world.
 serve = ["fastapi>=0.115", "uvicorn>=0.32"]
+# T3 diagnoser (diagnosis/llm.py). Without it — or without ANTHROPIC_API_KEY — the
+# engine keeps its default NoLLM and the free-text residual is diagnosed UNKNOWN.
+llm = ["anthropic>=1.0"]
 postgres = ["sqlalchemy>=2.0", "psycopg[binary]>=3.2"]
 workflow = ["temporalio>=1.7"]
 dev = ["pytest>=8.0"]

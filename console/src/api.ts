@@ -11,9 +11,22 @@ export type Lift = {
   incremental_paise: number;
 };
 
+export type LlmStats = {
+  enabled: boolean;
+  model: string;
+  residual_cases: number;
+  calls: number;
+  resolved: number;
+  refusals: number;
+  input_tokens: number;
+  output_tokens: number;
+};
+
+export type LlmMode = "auto" | "claude" | "none";
+
 export type Summary = {
   batch_id: string;
-  params: { cases: number; days: number; holdout: number; seed: number };
+  params: { cases: number; days: number; holdout: number; seed: number; llm: string };
   created_at: string;
   config_version: string;
   synthetic: boolean;
@@ -41,6 +54,7 @@ export type Summary = {
     denied_by_rule: Record<string, number>;
     amount_withheld_paise: number;
   };
+  llm: LlmStats;
   ledger_events: number;
   treated: number;
 };
@@ -97,6 +111,8 @@ export type Replay = {
     instrument: string;
     failure_code: string;
     cause: string;
+    tier: string;
+    free_text: string | null;
     state: string;
     arm: string;
     stopping_rule: string | null;
@@ -124,9 +140,9 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  runBatch: (p: { cases: number; days: number; holdout: number; seed: number }) =>
+  runBatch: (p: { cases: number; days: number; holdout: number; seed: number; llm: LlmMode }) =>
     json<Summary>(
-      `/api/batches?cases=${p.cases}&days=${p.days}&holdout=${p.holdout}&seed=${p.seed}`,
+      `/api/batches?cases=${p.cases}&days=${p.days}&holdout=${p.holdout}&seed=${p.seed}&llm=${p.llm}`,
       { method: "POST" },
     ),
   rules: (batchId: string) => json<RuleRollup[]>(`/api/batches/${batchId}/rules`),

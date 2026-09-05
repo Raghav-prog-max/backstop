@@ -82,7 +82,11 @@ class DiagnosisEngine:
         if cause is CauseClass.UNKNOWN and free_text:
             cause, llm_evidence = self.llm.diagnose(case, free_text)
             evidence.extend(llm_evidence)
-            tier = "T3"
+            # Only a grounded model answer is a T3 diagnosis. NoLLM, a refusal, a
+            # budget stop or an ungrounded reply all leave the tier where T1 put it —
+            # "the model was asked" is not the same as "the model diagnosed".
+            if any(e.tier == "T3" for e in llm_evidence):
+                tier = "T3"
 
         coarse = COARSE_PRIOR[cause]
         key = self.cohort.key(

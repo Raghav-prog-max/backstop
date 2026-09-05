@@ -72,6 +72,10 @@ class SqliteLedger:
     def close(self) -> None:
         self._conn.close()
 
+    def __len__(self) -> int:
+        (n,) = self._conn.execute("SELECT COUNT(*) FROM case_event").fetchone()
+        return int(n)
+
 
 def _row_to_event(row: tuple) -> CaseEvent:
     return CaseEvent(

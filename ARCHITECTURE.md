@@ -21,10 +21,12 @@ quality. All four are about restraint and proof.
 
 That inversion drives the whole architecture. The LLM is one narrow,
 schema-constrained component sitting on the residual cases that structured signals
-cannot classify — it defaults to [`NoLLM`](src/backstop/diagnosis/engine.py), which
-refuses rather than guessing. Everything that decides whether to spend a contact, a
-retry or a phone call is ordinary, versioned, unit-tested code, because those are the
-parts a panel will interrogate and "the model decided" is not an answer.
+cannot classify — [`ClaudeDiagnoser`](src/backstop/diagnosis/llm.py) when a key is
+present, [`NoLLM`](src/backstop/diagnosis/engine.py) otherwise, which refuses rather
+than guessing. It names a cause; it never picks an action. Everything that decides
+whether to spend a contact, a retry or a phone call is ordinary, versioned,
+unit-tested code, because those are the parts a panel will interrogate and "the model
+decided" is not an answer.
 
 The second consequence is that **measurement is a product surface, not a spreadsheet**.
 A system that recovers ₹1 crore is unimpressive if ₹0.9 crore would have self-recovered
@@ -142,7 +144,7 @@ rule closes its budget.
 | **T0** | [Network advice](src/backstop/diagnosis/advice.py) | Mastercard Merchant Advice Code, Visa decline category — read off the decline response | Retry eligibility, and often the retry time itself |
 | **T1** | [Decline-code taxonomy](src/backstop/diagnosis/taxonomy.py) | insufficient funds · expired instrument · issuer unavailable · 3DS abandonment · risk decline · `do_not_honour` | Cause class + coarse recoverability |
 | **T2** | [Cohort posterior](src/backstop/diagnosis/cohort.py) | Beta–Bernoulli over `(issuer × instrument × amount band × hour)` | P(recover), with sample size |
-| **T3** | [LLM, schema-constrained](src/backstop/diagnosis/engine.py) | Unstructured residual only — email threads, replies, free-text notes | Same `Diagnosis` struct, evidence spans required |
+| **T3** | [Claude, schema-constrained](src/backstop/diagnosis/llm.py) | Unstructured residual only — customer replies, support notes, forwarded bank SMS, on cases whose gateway code maps to nothing | Same `Diagnosis` struct; verbatim evidence spans required, ungrounded answers discarded |
 
 ### T0 outranks everything
 
@@ -170,6 +172,40 @@ that is an empirical fact the posterior learns, not a rule anyone wrote.
 **Non-negotiable:** every `Diagnosis` carries `evidence[]` pointing at raw event
 fields. One that cannot cite its inputs raises `EvidenceRequired` at construction —
 including, especially, a T3 one.
+
+### T3 has a contract, not a prompt
+
+The model is reached only when T1 returns `UNKNOWN` **and** the case carries free text.
+In the synthetic batch that is ~7% of cases: an unmapped gateway code (`payment_failed`,
+an issuer response nobody has tabled) with a customer's WhatsApp reply, a support note
+or a forwarded bank SMS attached. Nothing else is ever sent to a model, and the runner
+counts the residual whether or not the model is on so the denominator is visible.
+
+What comes back is forced through the same type as T0–T2, with three extra checks in
+[`diagnosis/llm.py`](src/backstop/diagnosis/llm.py):
+
+- **Closed enum.** `cause_class` is constrained to the eight `CauseClass` values by the
+  output schema. `unknown` is a legitimate answer and the prompt says so.
+- **Grounded evidence.** Every `evidence.quote` must be a verbatim substring of the text
+  the model was given. Quotes that are not are dropped; if none survive, the answer is
+  `UNKNOWN` regardless of the confidence field. A cause the model cannot ground is not a
+  diagnosis.
+- **Tier honesty.** The engine labels a diagnosis `T3` only when grounded model evidence
+  is present. `NoLLM`, a refusal, a budget stop or an unparseable reply all leave the
+  tier where T1 put it — "the model was asked" is not "the model diagnosed".
+
+The model names a cause. The cohort posterior prices it, the policy engine disposes,
+and the ledger's `diagnosed` row carries the model id and the quoted spans so a replay
+shows what the model *read*, not just what it concluded. Its contribution is measured
+the same way as everything else: the report slices lift **by diagnosis tier**, against
+the same holdout, with the same interval — so if T3 does not earn its cost, the report
+says so in the same font as everything else.
+
+Two simulator points that matter for that measurement: a residual case's latent
+behaviour comes from the generator's corpus, not from whatever the agent diagnosed
+([`latent_cause`](src/backstop/sim/generator.py)), so turning T3 on changes the
+diagnosis and nothing else; and the test suite exercises the whole contract through a
+fake — no network in CI.
 
 ## 7. The policy engine
 

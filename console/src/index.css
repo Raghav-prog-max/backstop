@@ -147,6 +147,10 @@ select {
   font-family: "IBM Plex Mono", monospace;
   font-size: 12px;
 }
+.field select {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
 .banner {
   background: var(--warn-wash);
   border-bottom: 1px solid var(--rule);
