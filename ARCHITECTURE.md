@@ -382,6 +382,11 @@ view keeps those columns separate rather than merging them into a flattering num
 
 ## 12. Stack and scope
 
+The console is implemented: [`api/app.py`](src/backstop/api/app.py) exposes the batch
+report, the Why-not feed and per-case replay; [`console/`](console) is a React + Vite
+client over it, sharing the palette and type of this document so the three surfaces
+read as one system. Both are optional — the stdlib CLI needs neither.
+
 **Stack.** Postgres for ledger, projections and outbox — one database, transactional
 with the state machine. Temporal for durable workflows, chosen over cron-plus-queue
 for `wait(until)` semantics measured in days and for free execution replay. Python /

@@ -37,6 +37,22 @@ python -m backstop.runner --cases 6000 --days 14 --html why_not.html
 python -m pytest -q
 ```
 
+### The console (optional)
+
+A React operator console over a FastAPI surface — batch report, Why-not view and
+ledger replay, driven live rather than exported. Two processes:
+
+```bash
+python -m pip install -e ".[serve]" && python -m backstop.api
+```
+
+```bash
+cd console && npm install && npm run dev
+```
+
+Then open <http://localhost:5180>. The CLI above stays stdlib-only and needs none of
+this; the console is an additional surface, not a replacement.
+
 Prefer not to install? Both work from a clean checkout with the source path set:
 
 ```bash
@@ -78,8 +94,10 @@ src/backstop/
   execution/    transactional outbox (exactly-once dispatch)
   measurement/  holdout assignment, lift with CI, cohort decomposition
   reporting/    the "Why not" view — a self-contained HTML audit surface
+  api/          FastAPI surface the console reads (optional [serve] extra)
   sim/          synthetic generator and the dry-run world
   runner.py     batch runner
+console/        React + Vite operator console (optional)
 ```
 
 ## The "Why not" view

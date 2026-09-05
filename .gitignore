@@ -13,3 +13,6 @@ venv/
 .vscode/
 why_not.html
 *.generated.html
+node_modules/
+console/dist/
+.vite/
