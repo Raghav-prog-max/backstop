@@ -5,7 +5,10 @@
 An agent that detects revenue at risk, diagnoses why it is leaking, and executes
 bounded recovery workflows under a compliance budget it is not allowed to overspend.
 
-Architecture document: <https://claude.ai/code/artifact/818474d5-fab3-426f-8b10-45b268c00c1e>
+**Architecture: [ARCHITECTURE.md](ARCHITECTURE.md)** — the canonical document, with
+every section linked to the code that implements it.
+A [formatted standalone version](https://claude.ai/code/artifact/818474d5-fab3-426f-8b10-45b268c00c1e)
+is also published.
 
 ---
 
