@@ -170,11 +170,11 @@ Four dispositions, deliberately distinct — collapsing them is how compliance b
 
 | Rule | Trigger | Disposition |
 |---|---|---|
-| `PR-01 CONSENT` | No channel consent, or number on the DND registry | deny that channel |
-| `PR-02 QUIET_HOURS` | Outside the merchant's contact window (IST) | defer to next open slot |
+| `PR-01 CONSENT` | No channel consent; or promotional contact to a DND-registered number | deny that channel |
+| `PR-02 PROMO_HOURS` | Promotional contact (or any voice call) outside 10:00–21:00 IST | defer to next open slot |
 | `PR-03 FREQ_CAP` | Contacts per channel per rolling window exceeded | deny |
-| `PR-04 RETRY_CEILING` | Card-network / issuer retry budget spent, or spacing not met | deny the retry only |
-| `PR-05 MANDATE_NOTICE` | e-mandate debit without pre-debit notification lead time | defer until notice served |
+| `PR-04 RETRY_CEILING` | Network reattempt ceiling in 30d, merchant cap, or spacing not met | deny the retry only |
+| `PR-05 MANDATE_NOTICE` | e-mandate debit without 24h pre-debit notice, or above the AFA ceiling without authentication | defer / deny |
 | `PR-06 ECON_FLOOR` | Expected recovery ≤ expected cost | suppress |
 | `PR-07 HARD_STOP` | Opt-out, dispute, chargeback, refund, or fraud flag | hard stop |
 | `PR-08 PROMISE_HOLD` | Promise-to-pay recorded | defer until promised date + grace |
@@ -190,6 +190,26 @@ behaviour that makes recovery agents unshippable. `goodwill_cost` rises with eac
 prior contact on the case, so the tenth message has to clear a bar the first one did
 not.
 
+### Service vs promotional communication
+
+TCCCPR draws a line that materially changes which rules apply, so
+[`MessageClass`](src/backstop/domain/types.py) is a first-class field on every action:
+
+- **Service** — a failed subscription debit, a mandate lapse, an overdue invoice.
+  Concerns an existing relationship. Not DND-scrubbed, not confined to promotional
+  hours.
+- **Promotional** — a checkout-abandonment nudge. An inducement to transact. DND
+  applies, and delivery is confined to 10:00–21:00 IST.
+
+Getting this wrong is expensive in both directions: treating everything as
+promotional means refusing to tell a customer their payment failed because they are
+DND-registered, and treating everything as service means sending marketing at 2am. An
+`Action` that omits its class defaults to `PROMOTIONAL`, so a forgetful caller gets
+the safer treatment.
+
+Voice calls are held to promotional hours regardless of class — nobody wants a
+collections call at 2am, whatever the regulation permits.
+
 ### Configuration, not constants
 
 Thresholds are set by regulation and by each merchant, and they change. Rule
@@ -197,10 +217,26 @@ Thresholds are set by regulation and by each merchant, and they change. Rule
 [`policy/config.py`](src/backstop/policy/config.py), and both the rule ID and the
 config version land in `rule_ids` on every decision.
 
-> ⚠️ **This build ships `cfg-2026.09.0-UNVERIFIED`.** The retry ceiling and the
-> e-mandate pre-debit notification / AFA parameters are placeholders pending
-> confirmation against primary sources. They are config precisely so this is a data
-> change rather than a code change.
+**`cfg-2026.09.1` — verified 2026-09-05** against the sources cited in the config
+module docstring, and pinned by
+[`tests/test_regulatory.py`](tests/test_regulatory.py) so that a regulator moving a
+number fails a test that names the rule:
+
+| Constant | Value | Source |
+|---|---|---|
+| Pre-debit notification lead time | 24 hours | RBI Digital Payments E-Mandate Framework 2026, circular `RBI/CO.DPSS.POLC.No.S56/02.14.003/2026-27` (21 Apr 2026) |
+| AFA ceiling, general | ₹15,000 | same |
+| AFA ceiling, insurance / mutual fund / credit card bill | ₹1,00,000 | same |
+| Promotional contact window | 10:00–21:00 IST | TRAI TCCCPR 2018, as amended |
+| DND scrubbing | promotional only | same |
+| Visa reattempt ceiling | 15 per declined transaction / 30 days | Visa card-not-present reattempt rules |
+| Mastercard reattempt ceiling | 10 per 30 days | Mastercard reattempt rules |
+| Unknown network | 10 (the stricter) | conservative default |
+| Merchant per-case retry cap | 3 | merchant policy, deliberately far under both ceilings |
+
+Network limits are the ceiling, not the target: the economics stop paying long before
+the compliance limit binds, which is why the merchant cap is 3 and PR-06 usually fires
+first.
 
 ## 8. Planner — timing over copy
 

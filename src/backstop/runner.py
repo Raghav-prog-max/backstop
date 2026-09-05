@@ -33,6 +33,12 @@ from .sim.world import World
 
 CONTACT_KINDS = CONTACT_ACTIONS
 
+# Which network an issuer's cards run on, for the reattempt ceiling in PR-04.
+NETWORK_BY_ISSUER = {
+    "HDFC": "visa", "ICICI": "mastercard", "SBI": "visa",
+    "AXIS": "mastercard", "KOTAK": "visa", "PAYTM": "mastercard",
+}
+
 
 @dataclass(slots=True)
 class BatchResult:
@@ -119,6 +125,10 @@ def run(n_cases: int, horizon_days: int, holdout: float, seed: int) -> BatchResu
                 last_retry_at=last_retry.get(case.case_id),
                 on_dnd_registry=rng.random() < 0.04,
                 mandate_notice_sent_at=case.created_at,
+                # The batch horizon is shorter than the 30-day network window, so
+                # retries on this case are exactly the retries in that window.
+                network=NETWORK_BY_ISSUER.get(case.issuer),
+                retries_in_network_window=case.retries_used,
             )
             decision = policy.evaluate(case, action, ctx)
             ledger.append(

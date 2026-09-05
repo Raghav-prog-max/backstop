@@ -160,10 +160,8 @@ Two statistical choices that matter:
 
 ## Before submitting
 
-- [ ] **Verify the regulatory constants.** `policy/config.py` ships
-      `cfg-2026.09.0-UNVERIFIED`: the retry ceiling and the e-mandate pre-debit
-      notification / AFA parameters are placeholders. Confirm current card-network
-      retry limits and RBI e-mandate rules against primary sources, then bump the
-      config version.
+- [x] **Regulatory constants verified** (2026-09-05) — `cfg-2026.09.1`. Sources are
+      cited in `policy/config.py` and each value is pinned by a test in
+      `tests/test_regulatory.py`. Re-check before submission; these move.
 - [ ] Swap the in-memory ledger for `SqliteLedger` or Postgres in the runner.
 - [ ] Record the 5-minute pitch video against a live batch run and the Why-not view.

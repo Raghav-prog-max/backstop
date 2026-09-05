@@ -17,10 +17,23 @@ from datetime import datetime, timedelta
 from ..diagnosis.engine import Diagnosis
 from ..diagnosis.taxonomy import NO_RETRY_CAUSES
 from ..domain.case import Case
-from ..domain.types import Channel
+from ..domain.types import CaseType, Channel, MessageClass
 from .actions import Action, ActionKind
 
 MESSAGE_TEMPLATES = ("plain_reminder", "one_tap_link", "value_reminder")
+
+# A message about a payment that already failed on an existing agreement is a service
+# message. A nudge to come back and complete an abandoned cart is an inducement to
+# transact, and is promotional.
+PROMOTIONAL_CASE_TYPES = frozenset({CaseType.CHECKOUT_ABANDONMENT})
+
+
+def message_class_for(case: Case) -> MessageClass:
+    return (
+        MessageClass.PROMOTIONAL
+        if case.case_type in PROMOTIONAL_CASE_TYPES
+        else MessageClass.SERVICE
+    )
 
 
 class Planner:
@@ -38,6 +51,7 @@ class Planner:
         return max(candidates, key=lambda a: self._score(a, case, dx, now))
 
     def _candidates(self, case: Case, dx: Diagnosis, now: datetime) -> list[Action]:
+        mc = message_class_for(case)
         out: list[Action] = [Action(ActionKind.WAIT, now + timedelta(days=1))]
 
         if dx.cause_class not in NO_RETRY_CAUSES:
@@ -49,14 +63,14 @@ class Planner:
             out.append(
                 Action(
                     ActionKind.REQUEST_REAUTH_LINK, now, channel=Channel.WHATSAPP,
-                    template="update_instrument",
+                    template="update_instrument", message_class=mc,
                 )
             )
 
         for template in MESSAGE_TEMPLATES:
             out.append(
                 Action(ActionKind.SEND_MESSAGE, now, channel=Channel.WHATSAPP,
-                       template=template)
+                       template=template, message_class=mc)
             )
 
         # High-value cases earn a human, not a louder robot.

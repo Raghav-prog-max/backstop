@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 from ..domain.case import Case
-from ..domain.types import Disposition
+from ..domain.types import Disposition, MessageClass
 from ..planner.actions import Action, ActionKind
 from .config import PolicyConfig
 
@@ -37,36 +37,61 @@ class RuleContext:
     on_dnd_registry: bool = False
     has_channel_consent: bool = True
     mandate_notice_sent_at: datetime | None = None
+    afa_completed: bool = False
+    mandate_category: str | None = None
+    network: str | None = None
+    retries_in_network_window: int = 0
 
 
 Rule = Callable[[Case, Action, RuleContext], RuleResult | None]
 
 
 def pr01_consent(case: Case, action: Action, ctx: RuleContext) -> RuleResult | None:
+    """DND scrubbing applies to promotional communication, not to service messages.
+
+    Telling a customer their subscription debit failed is a service message about an
+    existing relationship. Suppressing it because the number is DND-registered would
+    be both wrong under TCCCPR and expensive.
+    """
     if action.kind not in CONTACT_ACTIONS:
         return None
-    if ctx.on_dnd_registry or not ctx.has_channel_consent:
+    if not ctx.has_channel_consent:
         return RuleResult(
             "PR-01", Disposition.DENY, f"no consent for channel {action.channel}"
+        )
+    if ctx.on_dnd_registry and action.message_class is MessageClass.PROMOTIONAL:
+        return RuleResult(
+            "PR-01", Disposition.DENY, "promotional contact to a DND-registered number"
         )
     return None
 
 
-def pr02_quiet_hours(case: Case, action: Action, ctx: RuleContext) -> RuleResult | None:
+def pr02_promo_hours(case: Case, action: Action, ctx: RuleContext) -> RuleResult | None:
+    """The 10:00-21:00 IST window binds promotional communication only.
+
+    A voice call is treated as promotional-hours-bound regardless of class: nobody
+    wants a collections call at 2am, whatever the regulation permits.
+    """
     if action.kind not in CONTACT_ACTIONS:
+        return None
+    bound = (
+        action.message_class is MessageClass.PROMOTIONAL
+        or action.kind is ActionKind.VOICE_CALL
+    )
+    if not bound:
         return None
     cfg = ctx.config
     hour = ctx.now.hour
-    if cfg.quiet_hours_open <= hour < cfg.quiet_hours_close:
+    if cfg.promo_hours_open <= hour < cfg.promo_hours_close:
         return None
     # Right action, wrong time. Requeued, never dropped.
     next_open = ctx.now.replace(
-        hour=cfg.quiet_hours_open, minute=0, second=0, microsecond=0
+        hour=cfg.promo_hours_open, minute=0, second=0, microsecond=0
     )
-    if hour >= cfg.quiet_hours_close:
+    if hour >= cfg.promo_hours_close:
         next_open += timedelta(days=1)
     return RuleResult(
-        "PR-02", Disposition.DEFER, "outside merchant contact window", next_open
+        "PR-02", Disposition.DEFER, "outside permitted contact window", next_open
     )
 
 
@@ -86,8 +111,16 @@ def pr04_retry_ceiling(case: Case, action: Action, ctx: RuleContext) -> RuleResu
     if action.kind is not ActionKind.RETRY_PAYMENT:
         return None
     cfg = ctx.config
+    ceiling = cfg.network_ceiling_for(ctx.network)
+    if ctx.retries_in_network_window >= ceiling:
+        return RuleResult(
+            "PR-04",
+            Disposition.DENY,
+            f"{ctx.network or 'network'} reattempt ceiling ({ceiling} in "
+            f"{cfg.network_retry_window_days}d) reached",
+        )
     if case.retries_used >= cfg.max_retries:
-        return RuleResult("PR-04", Disposition.DENY, "retry budget spent")
+        return RuleResult("PR-04", Disposition.DENY, "merchant retry budget spent")
     if ctx.last_retry_at is not None:
         gap = ctx.now - ctx.last_retry_at
         if gap < timedelta(hours=cfg.min_hours_between_retries):
@@ -112,6 +145,15 @@ def pr05_mandate_notice(case: Case, action: Action, ctx: RuleContext) -> RuleRes
         serve_at = (sent or ctx.now) + timedelta(hours=cfg.mandate_notice_hours)
         return RuleResult(
             "PR-05", Disposition.DEFER, "pre-debit notification lead time not met", serve_at
+        )
+    # Above the AFA ceiling the debit needs authentication; a silent retry cannot
+    # supply it, so the case has to go to the customer rather than to the network.
+    ceiling = cfg.afa_ceiling_for(ctx.mandate_category)
+    if case.amount_paise > ceiling and not ctx.afa_completed:
+        return RuleResult(
+            "PR-05",
+            Disposition.DENY,
+            f"amount exceeds AFA ceiling ({ceiling}p) and no authentication on file",
         )
     return None
 
@@ -159,6 +201,6 @@ RULES: tuple[Rule, ...] = (
     pr05_mandate_notice,
     pr04_retry_ceiling,
     pr03_freq_cap,
-    pr02_quiet_hours,
+    pr02_promo_hours,
     pr06_economic_floor,
 )

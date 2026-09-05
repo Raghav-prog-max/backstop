@@ -53,6 +53,20 @@ class Channel(str, Enum):
     VOICE = "voice"
 
 
+class MessageClass(str, Enum):
+    """TCCCPR 2018 draws the line here, and it changes which rules apply.
+
+    SERVICE     — relates to an existing transaction or relationship (a failed
+                  subscription debit, a mandate lapse, an overdue invoice). Not
+                  DND-scrubbed, not confined to promotional hours.
+    PROMOTIONAL — an inducement to transact (a checkout-abandonment nudge). DND
+                  applies, and delivery is confined to the permitted window.
+    """
+
+    SERVICE = "service"
+    PROMOTIONAL = "promotional"
+
+
 class Disposition(str, Enum):
     """Four dispositions, deliberately distinct. Collapsing them hides compliance bugs."""
 

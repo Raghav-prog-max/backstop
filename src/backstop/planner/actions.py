@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-from ..domain.types import Channel
+from ..domain.types import Channel, MessageClass
 
 
 class ActionKind(str, Enum):
@@ -28,6 +28,9 @@ class Action:
     channel: Channel | None = None
     template: str | None = None
     reason: str | None = None
+    # Which TCCCPR class this contact falls under. Defaults to the stricter of the
+    # two, so a caller that forgets to set it gets the safer treatment.
+    message_class: MessageClass = MessageClass.PROMOTIONAL
 
     def idem_key(self, case_id: str, attempt: int) -> str:
         return f"{case_id}:{self.kind.value}:{attempt}:{self.fire_at.isoformat()}"
