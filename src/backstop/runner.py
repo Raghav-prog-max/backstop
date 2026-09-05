@@ -33,12 +33,6 @@ from .sim.world import World
 
 CONTACT_KINDS = CONTACT_ACTIONS
 
-# Which network an issuer's cards run on, for the reattempt ceiling in PR-04.
-NETWORK_BY_ISSUER = {
-    "HDFC": "visa", "ICICI": "mastercard", "SBI": "visa",
-    "AXIS": "mastercard", "KOTAK": "visa", "PAYTM": "mastercard",
-}
-
 
 @dataclass(slots=True)
 class BatchResult:
@@ -86,6 +80,13 @@ def run(n_cases: int, horizon_days: int, holdout: float, seed: int) -> BatchResu
         if case.arm is Arm.HOLDOUT:
             continue  # never diagnosed into the pipeline, never touched
 
+        # The planner never proposes a retry the network ruled out, so PR-04's advice
+        # branch is defence in depth and would count nothing. The saving is real here.
+        if dx.advice is not None and not dx.advice.retryable:
+            restraint.retry_ruled_out_by_network += 1
+            if dx.advice.penalised_if_retried:
+                restraint.fee_events_avoided += 1
+
         case.transition(CaseState.DIAGNOSED)
         ledger.append(
             CaseEvent(case.case_id, EventKind.DIAGNOSED, case.created_at,
@@ -127,8 +128,10 @@ def run(n_cases: int, horizon_days: int, holdout: float, seed: int) -> BatchResu
                 mandate_notice_sent_at=case.created_at,
                 # The batch horizon is shorter than the 30-day network window, so
                 # retries on this case are exactly the retries in that window.
-                network=NETWORK_BY_ISSUER.get(case.issuer),
+                network=case.network,
                 retries_in_network_window=case.retries_used,
+                advice=dx.advice,
+                last_decline_at=last_retry.get(case.case_id, case.created_at),
             )
             decision = policy.evaluate(case, action, ctx)
             ledger.append(

@@ -55,6 +55,11 @@ class Restraint:
     denied_by_rule: dict[str, int] = field(default_factory=dict)
     contacts_sent: int = 0
     opt_outs: int = 0
+    # Cases where the network's own advice ruled out retrying at all.
+    retry_ruled_out_by_network: int = 0
+    # The subset where a retry would have attracted a per-attempt network fee
+    # (Mastercard MAC 03 / 21, Visa category 1).
+    fee_events_avoided: int = 0
 
     def contacts_per_recovery(self, recoveries: int) -> float:
         return self.contacts_sent / recoveries if recoveries else float("inf")
@@ -152,6 +157,8 @@ def render(cases: list[Case], restraint: Restraint, action_cost_paise: Paise) ->
     w(f"  contacts sent             {restraint.contacts_sent:>14,}")
     w(f"  contacts per recovery     {restraint.contacts_per_recovery(t.recovered):>14.2f}")
     w(f"  customer opt-outs caused  {restraint.opt_outs:>14,}")
+    w(f"  retry ruled out by network{restraint.retry_ruled_out_by_network:>14,}")
+    w(f"    of which fee events     {restraint.fee_events_avoided:>14,}")
     w("  denied / deferred by rule")
     for rule_id, count in sorted(restraint.denied_by_rule.items()):
         w(f"    {rule_id:<24} {count:>14,}")

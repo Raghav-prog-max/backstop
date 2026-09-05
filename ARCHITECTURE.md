@@ -139,9 +139,27 @@ rule closes its budget.
 
 | Tier | Method | Handles | Output |
 |---|---|---|---|
+| **T0** | [Network advice](src/backstop/diagnosis/advice.py) | Mastercard Merchant Advice Code, Visa decline category — read off the decline response | Retry eligibility, and often the retry time itself |
 | **T1** | [Decline-code taxonomy](src/backstop/diagnosis/taxonomy.py) | insufficient funds · expired instrument · issuer unavailable · 3DS abandonment · risk decline · `do_not_honour` | Cause class + coarse recoverability |
 | **T2** | [Cohort posterior](src/backstop/diagnosis/cohort.py) | Beta–Bernoulli over `(issuer × instrument × amount band × hour)` | P(recover), with sample size |
 | **T3** | [LLM, schema-constrained](src/backstop/diagnosis/engine.py) | Unstructured residual only — email threads, replies, free-text notes | Same `Diagnosis` struct, evidence spans required |
+
+### T0 outranks everything
+
+The network frequently tells you what to do, and that instruction beats anything
+inferred from a code table or learned from a cohort — it knows the account is closed,
+and it knows when the issuer will next look favourably on the transaction.
+
+| Advice | Meaning | Effect |
+|---|---|---|
+| MAC `03`, `21` · Visa cat `1` | Do not try again | Retry never proposed; PR-04 denies it as defence in depth. Reattempting is a per-attempt fee, not just a wasted call |
+| MAC `01`, `04` · Visa cat `3` | Credential is the problem | Retry replaced by a reauth link — the customer has to act |
+| MAC `24`–`30` | Retry after 1h / 24h / 2, 4, 6, 8, 10 days | Becomes the retry window, overriding the learned offset |
+| MAC `02` · Visa cat `2`, `4` | Retryable, no stated time | Falls through to the cohort prior |
+
+An unrecognised code parses to *no advice* rather than to a guess: inventing permission
+the network did not grant is the failure mode this tier exists to prevent. Roughly a
+third of simulated declines carry no advice at all, and the system falls back to T1/T2.
 
 `do_not_honour` deserves its own note: it is the most common and least informative
 decline in the book, and treating it as a single class is how retry strategies earn
@@ -233,6 +251,8 @@ number fails a test that names the rule:
 | Mastercard reattempt ceiling | 10 per 30 days | Mastercard reattempt rules |
 | Unknown network | 10 (the stricter) | conservative default |
 | Merchant per-case retry cap | 3 | merchant policy, deliberately far under both ceilings |
+| Mastercard MAC table | `01`–`04`, `21`, `24`–`30` | Mastercard Merchant Advice Codes (DE 48 se 84) |
+| Visa decline categories | `1`–`4` | Visa decline response category grouping |
 
 Network limits are the ceiling, not the target: the economics stop paying long before
 the compliance limit binds, which is why the merchant cap is 3 and PR-06 usually fires

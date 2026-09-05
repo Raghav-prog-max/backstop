@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable
 
+from ..diagnosis.advice import NetworkAdvice
 from ..domain.case import Case
 from ..domain.types import Disposition, MessageClass
 from ..planner.actions import Action, ActionKind
@@ -41,6 +42,9 @@ class RuleContext:
     mandate_category: str | None = None
     network: str | None = None
     retries_in_network_window: int = 0
+    # T0 — what the network told us. Outranks everything we inferred.
+    advice: NetworkAdvice | None = None
+    last_decline_at: datetime | None = None
 
 
 Rule = Callable[[Case, Action, RuleContext], RuleResult | None]
@@ -111,6 +115,19 @@ def pr04_retry_ceiling(case: Case, action: Action, ctx: RuleContext) -> RuleResu
     if action.kind is not ActionKind.RETRY_PAYMENT:
         return None
     cfg = ctx.config
+
+    # The network's instruction comes first. Retrying against a "do not try again"
+    # is not merely wasted — it is a per-attempt fee and, after enough of them, a
+    # non-compliance assessment.
+    advice = ctx.advice
+    if advice is not None and not advice.retryable:
+        return RuleResult(
+            "PR-04",
+            Disposition.DENY,
+            f"{advice.network} advice {advice.code}: {advice.reason}"
+            + (" (reattempt is a fee event)" if advice.penalised_if_retried else ""),
+        )
+
     ceiling = cfg.network_ceiling_for(ctx.network)
     if ctx.retries_in_network_window >= ceiling:
         return RuleResult(
@@ -121,6 +138,19 @@ def pr04_retry_ceiling(case: Case, action: Action, ctx: RuleContext) -> RuleResu
         )
     if case.retries_used >= cfg.max_retries:
         return RuleResult("PR-04", Disposition.DENY, "merchant retry budget spent")
+    # An explicit "retry after N" is an instruction, not a suggestion.
+    if advice is not None and advice.earliest_retry is not None:
+        since = ctx.last_decline_at or ctx.last_retry_at
+        if since is not None:
+            not_before = since + advice.earliest_retry
+            if ctx.now < not_before:
+                return RuleResult(
+                    "PR-04",
+                    Disposition.DEFER,
+                    f"{advice.network} advice {advice.code}: {advice.reason}",
+                    not_before,
+                )
+
     if ctx.last_retry_at is not None:
         gap = ctx.now - ctx.last_retry_at
         if gap < timedelta(hours=cfg.min_hours_between_retries):

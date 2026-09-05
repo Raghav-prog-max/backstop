@@ -48,6 +48,8 @@ class RevenueAtRiskEvent:
     instrument: str
     failure_code: str
     occurred_at: datetime
+    network: str | None = None
+    advice_code: str | None = None
     merchant_id: str = "merch_demo"
 
 
@@ -61,6 +63,9 @@ class Case:
     instrument: str
     failure_code: str
     created_at: datetime
+    # What the network said, if it said anything. Parsed in diagnosis/advice.py.
+    network: str | None = None
+    advice_code: str | None = None
     arm: Arm = Arm.TREATED
     state: CaseState = CaseState.DETECTED
     cause: CauseClass = CauseClass.UNKNOWN

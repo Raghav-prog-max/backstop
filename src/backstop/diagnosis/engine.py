@@ -12,6 +12,7 @@ from typing import Protocol
 
 from ..domain.case import Case
 from ..domain.types import CauseClass
+from .advice import NetworkAdvice, parse as parse_advice
 from .cohort import CohortModel
 from .taxonomy import COARSE_PRIOR, RETRY_OFFSET_DAYS, classify
 
@@ -34,6 +35,9 @@ class Diagnosis:
     posterior_n: int
     retry_window_start: datetime
     tier: str
+    # T0. Present only when the network gave an explicit instruction; when present it
+    # outranks cause_class and recoverability for anything retry-related.
+    advice: NetworkAdvice | None = None
     evidence: list[Evidence] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -69,6 +73,12 @@ class DiagnosisEngine:
         evidence = [Evidence("failure_code", case.failure_code, "T1")]
         tier = "T1"
 
+        advice = parse_advice(case.network, case.advice_code)
+        if advice is not None:
+            evidence.append(
+                Evidence(f"{advice.network}_advice", advice.code, "T0")
+            )
+
         if cause is CauseClass.UNKNOWN and free_text:
             cause, llm_evidence = self.llm.diagnose(case, free_text)
             evidence.extend(llm_evidence)
@@ -83,12 +93,20 @@ class DiagnosisEngine:
             tier = "T2"
             evidence.append(Evidence("cohort", "/".join(key), "T2"))
 
-        offset = RETRY_OFFSET_DAYS.get(cause, 2)
+        # The network's own timing beats our learned offset. It knows when the
+        # issuer will next look favourably on this transaction; we are guessing.
+        if advice is not None and advice.earliest_retry is not None:
+            window = case.created_at + advice.earliest_retry
+            tier = "T0"
+        else:
+            window = case.created_at + timedelta(days=RETRY_OFFSET_DAYS.get(cause, 2))
+
         return Diagnosis(
             cause_class=cause,
             recoverability=post.mean,
             posterior_n=post.n,
-            retry_window_start=case.created_at + timedelta(days=offset),
+            retry_window_start=window,
             tier=tier,
+            advice=advice,
             evidence=evidence,
         )

@@ -72,7 +72,7 @@ ordinary versioned, unit-tested code in `policy/`.
 src/backstop/
   domain/       types, the append-only event record, the case state machine
   ledger/       LedgerStore protocol + in-memory and SQLite implementations
-  diagnosis/    T1 decline-code taxonomy -> T2 cohort posterior -> T3 LLM seam
+  diagnosis/    T0 network advice -> T1 code taxonomy -> T2 cohort posterior -> T3 LLM
   policy/       PR-01..PR-08, versioned config, the engine that disposes
   planner/      action space and the scored policy that picks action + timing
   execution/    transactional outbox (exactly-once dispatch)
@@ -131,6 +131,13 @@ enforces that — mixing the two would corrupt the reporting. See
 `defer` (right action, wrong time — requeued, never dropped), `suppress` (case not
 worth working), `hard stop` (cease all contact). Collapsing them is how compliance
 bugs hide.
+
+**The network usually knows better than we do.** A decline response often carries a
+Mastercard Merchant Advice Code or a Visa decline category, and that instruction
+outranks the taxonomy and the cohort model: MAC 03 means never retry (and reattempting
+is a per-attempt fee), MAC 01 means fetch a new credential rather than retry, and MAC
+24-30 give the retry time directly. An unrecognised code yields *no advice* rather than
+a guess. See `diagnosis/advice.py`.
 
 **Timing beats copy.** Retrying an `insufficient_funds` decline the day after salary
 credit is a larger lever than any message rewrite, so `wait(until)` is a first-class

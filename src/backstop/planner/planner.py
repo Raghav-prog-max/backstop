@@ -54,11 +54,19 @@ class Planner:
         mc = message_class_for(case)
         out: list[Action] = [Action(ActionKind.WAIT, now + timedelta(days=1))]
 
-        if dx.cause_class not in NO_RETRY_CAUSES:
+        # The network's instruction outranks the taxonomy in both directions: it can
+        # rule out a retry the cause class would have allowed, and it is the reason a
+        # reauth link becomes the sensible action instead.
+        advice = dx.advice
+        network_forbids = advice is not None and not advice.retryable
+        needs_credential = advice is not None and advice.needs_new_credential
+        retry_pointless = dx.cause_class in NO_RETRY_CAUSES or network_forbids
+
+        if not retry_pointless:
             fire_at = max(now, dx.retry_window_start)
             out.append(Action(ActionKind.RETRY_PAYMENT, fire_at))
 
-        if dx.cause_class in NO_RETRY_CAUSES:
+        if retry_pointless or needs_credential:
             # Retry cannot work by construction; the customer has to act.
             out.append(
                 Action(
