@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backstop"
+version = "0.1.0"
+description = "AI revenue recovery agent — Razorpay AI Buildathon, Track 03"
+requires-python = ">=3.11"
+# The core pipeline and the batch runner are stdlib-only on purpose: the thing being
+# graded has to run on a reviewer's machine without infrastructure.
+dependencies = []
+
+[project.optional-dependencies]
+# SEAM: the production adapters named in the architecture doc. Not needed to run
+# `python -m backstop.runner`, which uses the in-memory ledger and the dry-run world.
+serve = ["fastapi>=0.115", "uvicorn>=0.32"]
+postgres = ["sqlalchemy>=2.0", "psycopg[binary]>=3.2"]
+workflow = ["temporalio>=1.7"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+backstop = "backstop.runner:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

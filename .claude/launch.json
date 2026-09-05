@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backstop-view",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "3600"],
+      "port": 3600
+    }
+  ]
+}
