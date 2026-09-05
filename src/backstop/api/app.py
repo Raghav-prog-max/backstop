@@ -153,6 +153,7 @@ def summary(batch_id: str) -> dict[str, Any]:
         "decomposition": {
             name: {k: _lift_json(v) for k, v in decompose(cases, fn).items()}
             for name, fn in (
+                ("case_type", lambda c: c.case_type.value),
                 ("cause", lambda c: c.cause.value),
                 ("amount_band", lambda c: c.amount_band()),
                 ("issuer", lambda c: c.issuer),
@@ -178,6 +179,9 @@ def summary(batch_id: str) -> dict[str, Any]:
             "opt_outs": r.opt_outs,
             "retry_ruled_out_by_network": r.retry_ruled_out_by_network,
             "fee_events_avoided": r.fee_events_avoided,
+            "promises_made": r.promises_made,
+            "promises_kept": r.promises_kept,
+            "promises_broken": r.promises_broken,
             "denied_by_rule": dict(sorted(r.denied_by_rule.items())),
             "amount_withheld_paise": sum(
                 c.amount_paise for c in cases if c.state is CaseState.SUPPRESSED),
@@ -276,6 +280,11 @@ def case_replay(batch_id: str, case_id: str) -> dict[str, Any]:
             "cause": case.cause.value,
             "tier": case.tier,
             "free_text": case.free_text,
+            "due_at": case.due_at.isoformat(sep=" ", timespec="minutes") if case.due_at else None,
+            "promise_status": case.promise_status,
+            "promise_until": (case.promise_until.isoformat(sep=" ", timespec="minutes")
+                              if case.promise_until else None),
+            "promises_broken": case.promises_broken,
             "state": case.state.value,
             "arm": case.arm.value,
             "stopping_rule": case.stopping_rule,

@@ -143,12 +143,41 @@ def run(
         now = start + timedelta(days=day, hours=10)
 
         for case in cases:
-            if case.is_terminal:
-                continue
             # A case cannot be worked before it was detected. Without this the ledger
             # replays actions dated earlier than the signal that caused them.
             if now < case.created_at:
                 continue
+            if case.is_terminal:
+                # Escalation is terminal for the agent, not for the customer: a buyer
+                # whose invoice went to a human can still pay on its own, exactly as
+                # its holdout twin would. If escalation froze the case, the treated
+                # arm would be charged the lost self-heal for doing the right thing —
+                # and the more a segment needs humans, the worse the agent would look.
+                if case.state is CaseState.ESCALATED and world.self_heals_today(case):
+                    _recover(case, ledger, now, "self-healed after escalation",
+                             cohort, diagnoses)
+                continue
+
+            # A promise that has fallen due resolves before anything else happens to
+            # the case today: either the buyer paid, or the promise is now information.
+            if case.promise_status == "open" and case.promise_until is not None \
+                    and now >= case.promise_until:
+                if world.promise_resolves(case):
+                    case.promise_status = "kept"
+                    restraint.promises_kept += 1
+                    ledger.append(CaseEvent(case.case_id, EventKind.NOTE, now,
+                                            payload={"promise": "kept"}, actor="system"))
+                    _recover(case, ledger, now, "promise kept", cohort, diagnoses)
+                    continue
+                case.promise_status = "broken"
+                case.promises_broken += 1
+                restraint.promises_broken += 1
+                ledger.append(CaseEvent(case.case_id, EventKind.NOTE, now,
+                                        payload={"promise": "broken",
+                                                 "promised_by": case.promise_until.isoformat()},
+                                        actor="system"))
+                # PR-08 keeps holding contact for the grace period; after that the
+                # planner sees promises_broken and escalates rather than re-asking.
 
             # Self-heal applies to both arms. It is what gross recovery mistakes for work.
             if world.self_heals_today(case):
@@ -235,6 +264,17 @@ def run(
 
             if result and result.ok and result.recovered_paise:
                 _recover(case, ledger, now, str(action), cohort, diagnoses)
+            elif result and result.promise_until is not None:
+                # Not a recovery — a date. PR-08 now holds all contact until it passes.
+                case.promise_until = result.promise_until
+                case.promise_status = "open"
+                case.promises_made += 1
+                restraint.promises_made += 1
+                ledger.append(CaseEvent(case.case_id, EventKind.NOTE, now,
+                                        payload={"promise": "made",
+                                                 "promised_by": result.promise_until.isoformat()},
+                                        actor="system"))
+                case.transition(CaseState.PLANNED)
             elif case.opted_out:
                 restraint.opt_outs += 1
                 case.state = CaseState.ABANDONED

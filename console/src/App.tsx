@@ -242,6 +242,10 @@ function BatchReport({ summary }: { summary: Summary }) {
             v={r.retry_ruled_out_by_network.toLocaleString()}
           />
           <Row k="…of which fee events" v={r.fee_events_avoided.toLocaleString()} />
+          <Row
+            k="Promises to pay (kept / broken)"
+            v={`${r.promises_made.toLocaleString()} (${r.promises_kept} / ${r.promises_broken})`}
+          />
           <Row k="Ledger events" v={summary.ledger_events.toLocaleString()} />
         </div>
       </div>
@@ -393,7 +397,17 @@ function WhyNot({ summary, rules }: { summary: Summary; rules: RuleRollup[] }) {
   useEffect(() => {
     if (!selected) return setReplay(null);
     let live = true;
-    api.replay(summary.batch_id, selected).then((r) => live && setReplay(r));
+    api
+      .replay(summary.batch_id, selected)
+      .then((r) => live && setReplay(r))
+      // A selection can outlive its batch (a new run while a row is open). The case
+      // is simply gone; drop the selection instead of leaving a rejected promise.
+      .catch(() => {
+        if (live) {
+          setReplay(null);
+          setSelected(null);
+        }
+      });
     return () => {
       live = false;
     };
@@ -557,6 +571,11 @@ function ReplayPanel({ replay }: { replay: Replay }) {
         {c.amount} · {c.issuer} {c.network ? `(${c.network})` : ""} · {c.failure_code}
         {c.advice_code ? ` · advice ${c.advice_code}` : " · no network advice"} ·{" "}
         {c.cause} via {c.tier || "n/a"} · {c.retries} retries · {c.contacts} contacts
+        {c.due_at ? ` · due ${c.due_at.slice(0, 10)}` : ""}
+        {c.promise_status
+          ? ` · promise ${c.promise_status}${c.promise_until ? ` by ${c.promise_until.slice(0, 10)}` : ""}`
+          : ""}
+        {c.promises_broken > 0 ? ` · ${c.promises_broken} broken` : ""}
       </p>
       {c.free_text && (
         <p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>

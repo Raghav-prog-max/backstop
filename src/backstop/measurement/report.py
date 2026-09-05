@@ -61,6 +61,10 @@ class Restraint:
     # The subset where a retry would have attracted a per-attempt network fee
     # (Mastercard MAC 03 / 21, Visa category 1).
     fee_events_avoided: int = 0
+    # B2B promise-to-pay. A made promise is a hold, not a recovery; only kept counts.
+    promises_made: int = 0
+    promises_kept: int = 0
+    promises_broken: int = 0
 
     def contacts_per_recovery(self, recoveries: int) -> float:
         return self.contacts_sent / recoveries if recoveries else float("inf")
@@ -147,6 +151,7 @@ def render(
     w("")
     w("DECOMPOSITION  (lift pp +/- ci, n treated)")
     for label, fn in (
+        ("by case type", lambda c: c.case_type.value),
         ("by cause", lambda c: c.cause.value),
         ("by amount band", lambda c: c.amount_band()),
         ("by issuer", lambda c: c.issuer),
@@ -168,6 +173,9 @@ def render(
     w(f"  customer opt-outs caused  {restraint.opt_outs:>14,}")
     w(f"  retry ruled out by network{restraint.retry_ruled_out_by_network:>14,}")
     w(f"    of which fee events     {restraint.fee_events_avoided:>14,}")
+    w(f"  promises to pay obtained  {restraint.promises_made:>14,}")
+    w(f"    kept                    {restraint.promises_kept:>14,}")
+    w(f"    broken                  {restraint.promises_broken:>14,}")
     w("  denied / deferred by rule")
     for rule_id, count in sorted(restraint.denied_by_rule.items()):
         w(f"    {rule_id:<24} {count:>14,}")

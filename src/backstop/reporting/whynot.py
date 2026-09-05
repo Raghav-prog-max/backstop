@@ -37,7 +37,8 @@ RULE_NAMES: dict[str, str] = {
 }
 
 STOPPING_DISPOSITIONS = frozenset({"deny", "defer", "suppress", "hard_stop"})
-CONTACT_PREFIXES = ("send_message", "voice_call", "request_reauth_link")
+CONTACT_PREFIXES = ("send_message", "voice_call", "request_reauth_link",
+                    "request_promise_to_pay", "offer_installment")
 
 
 @dataclass(slots=True)

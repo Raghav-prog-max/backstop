@@ -26,6 +26,12 @@ class CauseClass(str, Enum):
     RISK_DECLINE = "risk_decline"
     DO_NOT_HONOUR = "do_not_honour"
     MANDATE_NOT_NOTIFIED = "mandate_not_notified"
+    # B2B receivables. Why an invoice is overdue is a different question from why a
+    # card declined, and the answers call for different actions: an AP cycle wants
+    # patience, a cash-constrained buyer wants a promise-to-pay, a query wants a human.
+    AP_CYCLE = "ap_cycle"                    # buyer pays on its own approval cycle
+    CASH_CONSTRAINED = "cash_constrained"    # buyer short of cash; will commit to a date
+    INVOICE_QUERY = "invoice_query"          # buyer disputes the invoice; dunning is harmful
     UNKNOWN = "unknown"
 
 

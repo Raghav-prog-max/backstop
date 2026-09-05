@@ -310,9 +310,31 @@ default one. See [`planner/planner.py`](src/backstop/planner/planner.py).
 | `request_reauth_link(ttl)` | One live link per case; a new one supersedes |
 | `send_message(channel, tmpl)` | PR-01, PR-02, PR-03 |
 | `voice_call(script, lang)` | PR-01, PR-02; human handoff on ambiguity |
-| `offer_installment(plan)` | Merchant-configured ceiling |
-| `escalate_human(queue)` | Always permitted; never counted as a recovery |
+| `offer_installment(plan)` | Merchant-configured ceiling; PR-01, PR-03 |
+| `request_promise_to_pay(channel)` | PR-01, PR-02, PR-03; a commitment puts the case on PR-08 hold |
+| `escalate_human(queue)` | Always permitted; never counted as a recovery — but the customer can still pay on their own afterwards, and that self-heal is kept so escalating is never charged as losing the case |
 | `close_case(reason)` | Terminal; reason code required, free text refused |
+
+### Receivables: the same planner, different levers
+
+An overdue invoice has no instrument to retry, so for `invoice_overdue` the planner
+swaps the retry ladder for three levers — a statement reminder, a request for a date,
+and a human — chosen by cause:
+
+| Cause (T1 from the AR system, T3 from the email thread) | What the planner does |
+|---|---|
+| `ap_cycle` — buyer pays on its own approval cycle | Statement in the first ten days, then patience; a date is only asked for once the cycle should have run |
+| `cash_constrained` — buyer short of cash | Ask for a date (voice above ₹1L, email below); offer a plan after the first contact |
+| `invoice_query` — buyer disputes the invoice | **Human only.** A disputed invoice is a conversation, not a dunning sequence; chasing it burns the relationship for revenue the buyer already says it will not pay as billed |
+| any, > 60 days overdue or a promise already broken | Human on the table |
+
+A promise is not a recovery. It is recorded as a `note`, the case goes on
+[`PR-08`](src/backstop/policy/rules.py) hold until the promised date plus grace, and
+on that date exactly one of two things is written: `promise kept` (a recovery) or
+`promise broken` (a count the planner reads — the second ask goes to a human, not
+back to the buyer). The report shows promises obtained, kept and broken side by side,
+because a collections agent that obtains many promises and keeps few is a worse
+agent, not a busier one.
 
 Selection is a scored policy over `(action, template, timing)` with ε-greedy
 exploration. The exploration is not decoration — it generates the variance the
@@ -357,8 +379,17 @@ flowchart LR
 ```
 
 Assignment is a deterministic hash of the case id
-([`measurement/assignment.py`](src/backstop/measurement/assignment.py)), so a rerun
-cannot quietly reshuffle arms until the number looks better.
+([`measurement/assignment.py`](src/backstop/measurement/assignment.py)), and in the
+synthetic batch the ids themselves are drawn from the batch seed rather than the OS, so
+a rerun with the same seed is the same batch, arm for arm — it cannot quietly reshuffle
+until the number looks better.
+
+One measurement rule that only became visible with receivables: **escalation is
+terminal for the agent, not for the customer.** A buyer whose invoice went to a human
+can still pay on its own, exactly as its holdout twin would. If escalating froze the
+case, the treated arm would be charged the lost self-heal for doing the right thing,
+and the more a segment needed humans the worse the agent would look — receivables
+showed a flat lift until this was corrected.
 
 ### What the batch report shows
 
@@ -436,9 +467,10 @@ extras in [`pyproject.toml`](pyproject.toml).
 
 **In scope.** Card payment failure recovery and subscription / mandate lapse. They
 share the retry-timing machinery, so two surfaces cost barely more than one and the
-shared cohort model gets twice the data.
-
-**Stretch.** B2B receivables — reuses the planner, needs its own promise-to-pay handling.
+shared cohort model gets twice the data. **B2B receivables** joined them once the first
+two were at depth: the same ledger, policy gate, holdout and report, with the retry
+ladder swapped for reminder / promise-to-pay / human (§8) and its own causes in T1 and
+T3. About 16% of the synthetic batch, and it earns its own row in every decomposition.
 
 **Cut.** Hinglish voice recovery. It is the most demo-shiny item on the track's list
 and the largest build for the narrowest slice, and it competes for time with the

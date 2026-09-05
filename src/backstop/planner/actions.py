@@ -17,6 +17,9 @@ class ActionKind(str, Enum):
     SEND_MESSAGE = "send_message"
     VOICE_CALL = "voice_call"
     OFFER_INSTALLMENT = "offer_installment"
+    # B2B: ask the buyer to commit to a date. A promise puts the case on PR-08 hold;
+    # a kept promise is a recovery, a broken one is information the planner acts on.
+    REQUEST_PROMISE_TO_PAY = "request_promise_to_pay"
     ESCALATE_HUMAN = "escalate_human"
     CLOSE_CASE = "close_case"
 

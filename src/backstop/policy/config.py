@@ -106,6 +106,8 @@ DEFAULT_ACTION_COSTS: dict[str, int] = {
     "send_message": 600,
     "voice_call": 9_000,
     "offer_installment": 1_200,
+    # An email asking for a date, plus the AR analyst's time to log the reply.
+    "request_promise_to_pay": 800,
     "escalate_human": 25_000,
     "close_case": 0,
 }

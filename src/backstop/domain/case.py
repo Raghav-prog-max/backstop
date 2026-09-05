@@ -80,7 +80,15 @@ class Case:
     contacts_by_channel: dict[Channel, int] = field(default_factory=dict)
     opted_out: bool = False
     dispute_open: bool = False
+    # B2B receivables. `due_at` is the invoice due date (the case is detected already
+    # past it). A promise-to-pay puts the case on PR-08 hold until `promise_until`;
+    # `promise_status` is open / kept / broken, and broken promises are counted because
+    # the second one changes what the planner does.
+    due_at: datetime | None = None
     promise_until: datetime | None = None
+    promise_status: str | None = None
+    promises_made: int = 0
+    promises_broken: int = 0
     next_action_at: datetime | None = None
 
     terminal_reason: str | None = None
@@ -94,6 +102,12 @@ class Case:
     @property
     def contacts_total(self) -> int:
         return sum(self.contacts_by_channel.values())
+
+    def days_overdue(self, now: datetime) -> int:
+        """Whole days past the invoice due date; 0 for anything that is not a receivable."""
+        if self.due_at is None:
+            return 0
+        return max((now - self.due_at).days, 0)
 
     def transition(self, to: CaseState, *, reason: str | None = None,
                    rule_id: str | None = None) -> None:

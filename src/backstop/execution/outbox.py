@@ -23,6 +23,9 @@ class ActionResult:
     ok: bool
     detail: str
     recovered_paise: int = 0
+    # Set when the customer committed to a date rather than paying. The case goes on
+    # PR-08 hold until then; what happens at that date is a separate event.
+    promise_until: datetime | None = None
 
 
 class ExecutorBackend(Protocol):

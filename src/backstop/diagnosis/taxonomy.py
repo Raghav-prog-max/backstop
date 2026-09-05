@@ -25,6 +25,11 @@ CODE_TO_CAUSE: dict[str, CauseClass] = {
     "fraud_suspected": CauseClass.RISK_DECLINE,
     "do_not_honour": CauseClass.DO_NOT_HONOUR,
     "mandate_pre_debit_missing": CauseClass.MANDATE_NOT_NOTIFIED,
+    # B2B receivables. These "codes" come from the AR system, not a gateway: what the
+    # buyer's AP desk said (or did not say) when the invoice went past due.
+    "overdue_ap_pending": CauseClass.AP_CYCLE,
+    "overdue_cash_flow": CauseClass.CASH_CONSTRAINED,
+    "overdue_query_raised": CauseClass.INVOICE_QUERY,
 }
 
 # Coarse prior used only until the cohort model has enough observations to speak.
@@ -36,8 +41,17 @@ COARSE_PRIOR: dict[CauseClass, float] = {
     CauseClass.RISK_DECLINE: 0.05,
     CauseClass.DO_NOT_HONOUR: 0.30,
     CauseClass.MANDATE_NOT_NOTIFIED: 0.70,
+    CauseClass.AP_CYCLE: 0.75,
+    CauseClass.CASH_CONSTRAINED: 0.45,
+    CauseClass.INVOICE_QUERY: 0.25,
     CauseClass.UNKNOWN: 0.15,
 }
+
+# Causes that belong to a receivable, not a payment instrument. There is nothing to
+# retry: the buyer has to pay, and the levers are a reminder, a promise, or a human.
+RECEIVABLE_CAUSES = frozenset(
+    {CauseClass.AP_CYCLE, CauseClass.CASH_CONSTRAINED, CauseClass.INVOICE_QUERY}
+)
 
 # Days from detection at which a retry is most likely to land, by cause.
 # The insufficient-funds window is the payday effect: it is the single largest lever
@@ -50,12 +64,15 @@ RETRY_OFFSET_DAYS: dict[CauseClass, int] = {
     CauseClass.MANDATE_NOT_NOTIFIED: 2,
     CauseClass.EXPIRED_INSTRUMENT: 0,  # retry is pointless; needs a new instrument
     CauseClass.RISK_DECLINE: 0,        # retry is harmful; never retry a risk decline
+    CauseClass.AP_CYCLE: 0,            # no instrument to retry
+    CauseClass.CASH_CONSTRAINED: 0,
+    CauseClass.INVOICE_QUERY: 0,
     CauseClass.UNKNOWN: 2,
 }
 
 # Causes where retrying the same instrument cannot work by construction.
 NO_RETRY_CAUSES = frozenset(
-    {CauseClass.EXPIRED_INSTRUMENT, CauseClass.RISK_DECLINE}
+    {CauseClass.EXPIRED_INSTRUMENT, CauseClass.RISK_DECLINE} | RECEIVABLE_CAUSES
 )
 
 

@@ -51,6 +51,9 @@ export type Summary = {
     opt_outs: number;
     retry_ruled_out_by_network: number;
     fee_events_avoided: number;
+    promises_made: number;
+    promises_kept: number;
+    promises_broken: number;
     denied_by_rule: Record<string, number>;
     amount_withheld_paise: number;
   };
@@ -113,6 +116,10 @@ export type Replay = {
     cause: string;
     tier: string;
     free_text: string | null;
+    due_at: string | null;
+    promise_status: string | null;
+    promise_until: string | null;
+    promises_broken: number;
     state: string;
     arm: string;
     stopping_rule: string | null;

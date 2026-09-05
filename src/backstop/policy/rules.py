@@ -17,7 +17,15 @@ from ..planner.actions import Action, ActionKind
 from .config import PolicyConfig
 
 CONTACT_ACTIONS = frozenset(
-    {ActionKind.SEND_MESSAGE, ActionKind.VOICE_CALL, ActionKind.REQUEST_REAUTH_LINK}
+    {
+        ActionKind.SEND_MESSAGE,
+        ActionKind.VOICE_CALL,
+        ActionKind.REQUEST_REAUTH_LINK,
+        # Asking for a date or offering a plan is still a contact: it counts against
+        # the frequency cap and is subject to consent and hours like any other.
+        ActionKind.REQUEST_PROMISE_TO_PAY,
+        ActionKind.OFFER_INSTALLMENT,
+    }
 )
 
 

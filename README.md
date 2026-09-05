@@ -200,6 +200,19 @@ greedy planner produces a system that cannot explain its own results.
 **Duplicate contact is a compliance incident, not a bug.** Hence the outbox: intent
 committed to the ledger before dispatch, keyed by a stable idempotency key.
 
+**A promise is not a recovery.** B2B receivables (`invoice_overdue`, ~16% of the batch)
+swap the retry ladder for reminder / promise-to-pay / human. A buyer's commitment to a
+date puts the case on PR-08 hold; on that date the ledger records exactly one of
+`promise kept` (a recovery) or `promise broken` (the planner's cue to bring in a
+human). The report shows obtained, kept and broken side by side. A disputed invoice
+(`invoice_query`) is never chased — it goes straight to a human. See
+`tests/test_receivables.py`.
+
+**Escalation is terminal for the agent, not for the customer.** An escalated case keeps
+its chance to pay on its own, as its holdout twin would. Otherwise the treated arm would
+be charged the lost self-heal for handing a case to a human — receivables showed a flat
+lift until this was corrected, and the fix is a measurement rule, not a tuning knob.
+
 ## On the numbers
 
 The demo runs on a **synthetic generator**, declared as such here, in
@@ -222,6 +235,8 @@ Two statistical choices that matter:
       `tests/test_regulatory.py`. Re-check before submission; these move.
 - [x] `SqliteLedger` available in the runner (`--ledger sqlite`). Postgres stays a seam.
 - [x] T3 wired to Claude (`--llm claude`), grounded-evidence contract tested without network.
+- [x] B2B receivables with promise-to-pay tracking; batches reproducible seed-for-seed
+      (case ids come from the seed, so holdout arms no longer reshuffle between runs).
 - [ ] Run one batch with `--llm claude` and keep the report — the `MODEL` block and the
       `by diagnosis tier` slice are the evidence that the model earns its place.
 - [ ] Record the 5-minute pitch video against a live batch run and the Why-not view.

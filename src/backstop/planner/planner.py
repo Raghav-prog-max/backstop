@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from ..diagnosis.engine import Diagnosis
 from ..diagnosis.taxonomy import NO_RETRY_CAUSES
 from ..domain.case import Case
-from ..domain.types import CaseType, Channel, MessageClass
+from ..domain.types import CaseType, CauseClass, Channel, MessageClass
 from .actions import Action, ActionKind
 
 MESSAGE_TEMPLATES = ("plain_reminder", "one_tap_link", "value_reminder")
@@ -54,6 +54,9 @@ class Planner:
         mc = message_class_for(case)
         out: list[Action] = [Action(ActionKind.WAIT, now + timedelta(days=1))]
 
+        if case.case_type is CaseType.INVOICE_OVERDUE:
+            return self._receivable_candidates(case, dx, now, out)
+
         # The network's instruction outranks the taxonomy in both directions: it can
         # rule out a retry the cause class would have allowed, and it is the reason a
         # reauth link becomes the sensible action instead.
@@ -87,6 +90,43 @@ class Planner:
 
         return out
 
+    def _receivable_candidates(
+        self, case: Case, dx: Diagnosis, now: datetime, out: list[Action]
+    ) -> list[Action]:
+        """B2B receivables. No instrument to retry; every touch is a service message
+        about an existing contract; the levers are a reminder, a date, or a human."""
+        mc = MessageClass.SERVICE
+        overdue = case.days_overdue(now)
+
+        if dx.cause_class is CauseClass.INVOICE_QUERY:
+            # A disputed invoice is a conversation, not a dunning sequence. Chasing it
+            # burns the relationship for revenue the buyer already says it will not pay
+            # as billed. Only a human can resolve it, so that is the only candidate.
+            out.append(Action(ActionKind.ESCALATE_HUMAN, now, reason="invoice under query"))
+            return out
+
+        if case.promises_broken >= 1 or overdue > 60:
+            out.append(Action(
+                ActionKind.ESCALATE_HUMAN, now,
+                reason=f"{overdue}d overdue, {case.promises_broken} promise(s) broken",
+            ))
+
+        out.append(Action(ActionKind.SEND_MESSAGE, now, channel=Channel.EMAIL,
+                          template="statement_reminder", message_class=mc))
+
+        # A buyer on its own approval cycle does not need to be asked for a date in
+        # the first week; it needs the statement and then patience.
+        early_ap_cycle = dx.cause_class is CauseClass.AP_CYCLE and overdue < 10
+        if not early_ap_cycle:
+            channel = Channel.VOICE if case.amount_paise >= 10_000_000 else Channel.EMAIL
+            out.append(Action(ActionKind.REQUEST_PROMISE_TO_PAY, now, channel=channel,
+                              template="promise_to_pay", message_class=mc))
+
+        if dx.cause_class is CauseClass.CASH_CONSTRAINED and case.contacts_total >= 1:
+            out.append(Action(ActionKind.OFFER_INSTALLMENT, now, channel=Channel.EMAIL,
+                              template="installment_plan", message_class=mc))
+        return out
+
     def _score(self, action: Action, case: Case, dx: Diagnosis, now: datetime) -> float:
         """Expected value, in paise, discounted by how long we have to wait for it."""
         if action.kind is ActionKind.WAIT:
@@ -110,5 +150,6 @@ _UPLIFT: dict[ActionKind, float] = {
     ActionKind.SEND_MESSAGE: 0.12,
     ActionKind.VOICE_CALL: 0.20,
     ActionKind.OFFER_INSTALLMENT: 0.18,
+    ActionKind.REQUEST_PROMISE_TO_PAY: 0.28,
     ActionKind.ESCALATE_HUMAN: 0.30,
 }

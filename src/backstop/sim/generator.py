@@ -87,6 +87,13 @@ MANDATE_CODES = (
 )
 
 
+def _case_id(rng: random.Random) -> str:
+    """A UUID drawn from the batch seed, not from the OS. Holdout assignment is a hash of
+    the case id, so ids must be reproducible or the arms reshuffle on every run — and
+    the promise that a rerun cannot quietly change the number would be false."""
+    return str(uuid.UUID(int=rng.getrandbits(128), version=4))
+
+
 def _advice_for(rng: random.Random, code: str, network: str) -> str | None:
     table = ADVICE_BY_CODE.get(code, {}).get(network)
     if not table:
@@ -160,13 +167,74 @@ def latent_cause(case: Case) -> CauseClass | None:
     return _TRUTH_BY_TEXT.get(case.free_text)
 
 
+# --- B2B receivables -------------------------------------------------------------
+#
+# An overdue invoice arrives from the AR system, not a gateway. What stands in for a
+# decline code is what the buyer's AP desk said when chased (or that it said nothing).
+# The residual here is an email thread the code table cannot read.
+
+INVOICE_CODES = (
+    ("overdue_ap_pending", 0.42),
+    ("overdue_cash_flow", 0.28),
+    ("overdue_query_raised", 0.12),
+    ("overdue_no_response", 0.18),   # unmapped -> UNKNOWN unless there is text
+)
+
+INVOICE_FREE_TEXT: tuple[tuple[str, CauseClass], ...] = (
+    ("Invoice is with our accounts team, AP cycle is 45 days from GRN. Will release in next run.", CauseClass.AP_CYCLE),
+    ("Approved from our side, payment file goes to bank every 2nd Friday.", CauseClass.AP_CYCLE),
+    ("We are facing a cash crunch this month, can we clear this by the 25th?", CauseClass.CASH_CONSTRAINED),
+    ("Requesting 3 weeks extension, collections from our own clients are delayed.", CauseClass.CASH_CONSTRAINED),
+    ("Qty billed does not match delivery challan, please send revised invoice.", CauseClass.INVOICE_QUERY),
+    ("GST number on the invoice is wrong, cannot process till corrected.", CauseClass.INVOICE_QUERY),
+    ("noted", CauseClass.UNKNOWN),
+)
+
+_TRUTH_BY_TEXT.update({text: cause for text, cause in INVOICE_FREE_TEXT})
+
+# Share of the batch that is B2B receivables. Card and mandate split the rest as before.
+INVOICE_SHARE = 0.16
+
+
+def _invoice(rng: random.Random, start: datetime, residual_share: float) -> Case:
+    # Invoices are an order of magnitude larger than consumer payments and are
+    # detected already past due — anywhere from a few days to well over the point
+    # where a human should take over.
+    rupees = min(round(rng.lognormvariate(10.6, 0.9), 2), 2_500_000.0)
+    created_at = start + timedelta(minutes=rng.randrange(0, 60 * 24))
+    overdue_days = rng.choice((3, 5, 8, 12, 15, 20, 30, 45, 62, 75))
+    failure_code = _weighted(rng, INVOICE_CODES)
+    free_text: str | None = None
+    if failure_code == "overdue_no_response" and rng.random() < residual_share * 6:
+        free_text, _ = rng.choice(INVOICE_FREE_TEXT)
+    return Case(
+        case_id=_case_id(rng),
+        case_type=CaseType.INVOICE_OVERDUE,
+        amount_paise=int(rupees * 100),
+        customer_ref=f"buyer_{rng.randrange(10**5):05d}",
+        issuer="B2B",
+        instrument="invoice",
+        failure_code=failure_code,
+        created_at=created_at,
+        network=None,
+        advice_code=None,
+        free_text=free_text,
+        due_at=created_at - timedelta(days=overdue_days),
+    )
+
+
 def generate(
-    n: int, *, start: datetime, seed: int = 42, residual_share: float = RESIDUAL_SHARE
+    n: int, *, start: datetime, seed: int = 42, residual_share: float = RESIDUAL_SHARE,
+    invoice_share: float = INVOICE_SHARE,
 ) -> list[Case]:
     rng = random.Random(seed)
     cases: list[Case] = []
 
     for _ in range(n):
+        if rng.random() < invoice_share:
+            cases.append(_invoice(rng, start, residual_share))
+            continue
+
         case_type = (
             CaseType.CARD_FAILURE if rng.random() < 0.62 else CaseType.MANDATE_LAPSE
         )
@@ -190,7 +258,7 @@ def generate(
 
         cases.append(
             Case(
-                case_id=str(uuid.uuid4()),
+                case_id=_case_id(rng),
                 case_type=case_type,
                 amount_paise=int(rupees * 100),
                 customer_ref=f"cust_{rng.randrange(10**7):07d}",

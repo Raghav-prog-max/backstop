@@ -142,7 +142,9 @@ def test_residual_cases_have_unmapped_codes_and_text_and_nothing_else_does():
         assert c.advice_code is None
         assert latent_cause(c) is not None
     for c in cases:
-        if c.free_text is None:
+        # Invoices may carry an unmapped AR code with no text at all — the buyer simply
+        # did not respond. That is UNKNOWN by design, not a residual for the model.
+        if c.free_text is None and c.case_type is not CaseType.INVOICE_OVERDUE:
             assert c.failure_code in CODE_TO_CAUSE
 
 
@@ -170,7 +172,9 @@ def test_runner_records_model_and_evidence_for_t3_diagnoses():
     assert result.llm.residual_cases > 0
     assert 0 < result.llm.resolved <= result.llm.residual_cases
 
-    t3 = [c for c in result.cases if c.tier == "T3"]
+    # Holdout cases are diagnosed too but never enter the pipeline, so only treated
+    # ones carry a `diagnosed` ledger row.
+    t3 = [c for c in result.cases if c.tier == "T3" and c.arm.value == "treated"]
     assert t3, "some treated residual cases should carry a T3 diagnosis"
     ev = next(e for e in result.ledger.events_for(t3[0].case_id)
               if e.kind is EventKind.DIAGNOSED)

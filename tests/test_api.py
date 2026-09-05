@@ -47,7 +47,7 @@ def test_lift_carries_its_interval_and_verdict(batch):
 
 
 def test_decomposition_covers_every_dimension(batch):
-    assert set(batch["decomposition"]) == {"cause", "amount_band", "issuer", "tier"}
+    assert set(batch["decomposition"]) == {"case_type", "cause", "amount_band", "issuer", "tier"}
     for buckets in batch["decomposition"].values():
         assert buckets
         for lf in buckets.values():
@@ -104,8 +104,10 @@ def test_replay_is_chronological_and_starts_at_detection(client, batch):
 def test_replay_exposes_the_network_advice_the_decision_used(client, batch):
     bid = batch["batch_id"]
     rows = client.get(f"/api/batches/{bid}/cases?limit=200").json()["rows"]
+    # Receivables carry no network at all, so sample the card/mandate rows.
+    cards = [r for r in rows if r.get("type") != "invoice_overdue"]
     seen = [client.get(f"/api/batches/{bid}/cases/{r['id']}").json()["case"]
-            for r in rows[:40]]
+            for r in cards[:40]]
     assert all(c["network"] in {"visa", "mastercard", None} for c in seen)
     # At least some cases in any real batch carry an advice code.
     assert any(c["advice_code"] for c in seen)
