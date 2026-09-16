@@ -205,3 +205,48 @@ def test_config_module_cites_its_sources():
     for citation in ("RBI/CO.DPSS.POLC.No.S56/02.14.003/2026-27", "TCCCPR", "Visa",
                      "Mastercard", "verified 2026-09-05"):
         assert citation in doc, f"missing citation: {citation}"
+
+
+# --- PR-05 in practice: the notice is sent, not assumed ------------------------------
+
+def test_planner_sends_the_notice_before_it_proposes_a_mandate_debit():
+    from backstop.diagnosis.cohort import CohortModel
+    from backstop.diagnosis.engine import DiagnosisEngine
+    from backstop.planner.planner import Planner
+
+    planner = Planner(epsilon=0.0)
+    case = make_case(case_type=CaseType.MANDATE_LAPSE, instrument="upi_mandate",
+                     failure_code="insufficient_funds", created_at=NOW - timedelta(days=4))
+    dx = DiagnosisEngine(CohortModel()).diagnose(case)
+
+    kinds = {a.kind for a in planner._candidates(case, dx, NOW)}
+    assert ActionKind.PRE_DEBIT_NOTICE in kinds
+    assert ActionKind.RETRY_PAYMENT not in kinds
+
+    case.mandate_notice_sent_at = NOW
+    retries = [a for a in planner._candidates(case, dx, NOW)
+               if a.kind is ActionKind.RETRY_PAYMENT]
+    assert retries and retries[0].fire_at >= NOW + timedelta(hours=24)
+
+
+def test_every_mandate_debit_in_a_batch_follows_its_own_delivered_notice():
+    from backstop.domain.events import EventKind
+    from backstop.runner import run
+
+    result = run(2000, 10, 0.1, seed=5)
+    mandates = [c for c in result.cases if c.case_type is CaseType.MANDATE_LAPSE]
+    debits = 0
+    for c in mandates:
+        notice_at = None
+        for e in result.ledger.events_for(c.case_id):
+            if e.kind is not EventKind.ACTION_RESULT:
+                continue
+            action = e.payload["action"]
+            if action.startswith("pre_debit_notice") and e.payload["ok"]:
+                notice_at = e.occurred_at
+            elif action.startswith("retry_payment"):
+                debits += 1
+                assert notice_at is not None, f"{c.case_id}: debit with no notice"
+                assert e.occurred_at - notice_at >= timedelta(hours=24)
+                notice_at = None  # one notice, one debit
+    assert debits > 0

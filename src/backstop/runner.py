@@ -64,6 +64,11 @@ class BatchResult:
     deduped: int
     cohorts_learned: int
     llm: LLMStats = field(default_factory=LLMStats)
+    cohorts_confident: int = 0
+    # Policy decisions whose expected recovery came from a confident cohort posterior
+    # rather than the intake-day prior. Zero here means T2 is decoration.
+    decisions_priced_by_t2: int = 0
+    redispatched: int = 0
 
 
 def run(
@@ -79,18 +84,20 @@ def run(
     rng = random.Random(seed)
 
     ledger = ledger if ledger is not None else InMemoryLedger()
-    cohort = CohortModel()
+    cohort = CohortModel(horizon_days=horizon_days)
     diagnoser = DiagnosisEngine(cohort, llm=llm)
     llm_stats = LLMStats(enabled=llm is not None,
                          model=getattr(llm, "model", type(llm).__name__ if llm else ""))
     policy = PolicyEngine(PolicyConfig())
-    planner = Planner(epsilon=0.1, rng=random.Random(seed + 1))
+    planner = Planner(epsilon=0.1, rng=random.Random(seed + 1),
+                      mandate_notice_hours=policy.config.mandate_notice_hours)
     world = World(horizon_days=horizon_days, seed=seed + 2)
     outbox = Outbox(ledger, world)
 
     cases = generate(n_cases, start=start, seed=seed)
     restraint = Restraint()
     action_cost = 0
+    decisions_priced_by_t2 = 0
     diagnoses = {}
     last_retry: dict[str, datetime] = {}
     attempts: dict[str, int] = {}
@@ -141,6 +148,10 @@ def run(
 
     for day in range(horizon_days):
         now = start + timedelta(days=day, hours=10)
+        # The treated cases the agent is working today. Each contributes one case-day
+        # to its cohort at the end of the day, recovered or not.
+        at_risk = [c for c in cases if c.arm is Arm.TREATED and not c.is_terminal
+                   and now >= c.created_at]
 
         for case in cases:
             # A case cannot be worked before it was detected. Without this the ledger
@@ -154,8 +165,7 @@ def run(
                 # arm would be charged the lost self-heal for doing the right thing —
                 # and the more a segment needs humans, the worse the agent would look.
                 if case.state is CaseState.ESCALATED and world.self_heals_today(case):
-                    _recover(case, ledger, now, "self-healed after escalation",
-                             cohort, diagnoses)
+                    _recover(case, ledger, now, "self-healed after escalation")
                 continue
 
             # A promise that has fallen due resolves before anything else happens to
@@ -167,7 +177,7 @@ def run(
                     restraint.promises_kept += 1
                     ledger.append(CaseEvent(case.case_id, EventKind.NOTE, now,
                                             payload={"promise": "kept"}, actor="system"))
-                    _recover(case, ledger, now, "promise kept", cohort, diagnoses)
+                    _recover(case, ledger, now, "promise kept")
                     continue
                 case.promise_status = "broken"
                 case.promises_broken += 1
@@ -181,13 +191,16 @@ def run(
 
             # Self-heal applies to both arms. It is what gross recovery mistakes for work.
             if world.self_heals_today(case):
-                _recover(case, ledger, now, "self-healed", cohort, diagnoses)
+                _recover(case, ledger, now, "self-healed")
                 continue
 
             if case.arm is Arm.HOLDOUT:
                 continue
 
-            dx = diagnoses[case.case_id]
+            # Re-price against today's cohort, not the intake-day prior. The cause and
+            # any model evidence stay as diagnosed; only the posterior moves.
+            dx = diagnoser.refresh(case, diagnoses[case.case_id])
+            diagnoses[case.case_id] = dx
             action = planner.next_action(case, dx, now)
 
             expected = int(case.amount_paise * dx.recoverability * policy.config.merchant_margin)
@@ -197,7 +210,7 @@ def run(
                 expected_recovery_paise=expected,
                 last_retry_at=last_retry.get(case.case_id),
                 on_dnd_registry=rng.random() < 0.04,
-                mandate_notice_sent_at=case.created_at,
+                mandate_notice_sent_at=case.mandate_notice_sent_at,
                 # The batch horizon is shorter than the 30-day network window, so
                 # retries on this case are exactly the retries in that window.
                 network=case.network,
@@ -210,9 +223,15 @@ def run(
                 CaseEvent(case.case_id, EventKind.POLICY_DECIDED, now,
                           payload={"action": str(action),
                                    "disposition": decision.disposition.value,
-                                   "reason": decision.reason},
+                                   "reason": decision.reason,
+                                   # The number PR-06 judged, and where it came from.
+                                   "p_recover": round(dx.recoverability, 4),
+                                   "posterior_n": dx.posterior_n,
+                                   "priced_by": "T2" if dx.tier == "T2" else "prior"},
                           rule_ids=decision.rule_ids, actor="policy")
             )
+            if dx.tier == "T2":
+                decisions_priced_by_t2 += 1
 
             if decision.disposition is not Disposition.ALLOW:
                 for r in decision.fired:
@@ -258,12 +277,16 @@ def run(
             if action.kind is ActionKind.RETRY_PAYMENT:
                 case.retries_used += 1
                 last_retry[case.case_id] = now
+                # One notice covers one debit. The next attempt needs its own.
+                case.mandate_notice_sent_at = None
+            if action.kind is ActionKind.PRE_DEBIT_NOTICE and result.ok:
+                case.mandate_notice_sent_at = now
             if action.kind in CONTACT_KINDS and action.channel:
                 case.record_contact(action.channel)
                 restraint.contacts_sent += 1
 
             if result and result.ok and result.recovered_paise:
-                _recover(case, ledger, now, str(action), cohort, diagnoses)
+                _recover(case, ledger, now, str(action))
             elif result and result.promise_until is not None:
                 # Not a recovery — a date. PR-08 now holds all contact until it passes.
                 case.promise_until = result.promise_until
@@ -284,6 +307,12 @@ def run(
             else:
                 case.transition(CaseState.PLANNED)  # wait -> next attempt
 
+        for case in at_risk:
+            key = cohort.key(case.issuer, case.instrument, case.amount_band(),
+                             case.created_at.hour)
+            recovered_today = case.state is CaseState.RECOVERED and case.recovered_at == now
+            cohort.observe(key, recovered_today, case_id=case.case_id)
+
     for case in cases:
         if not case.is_terminal:
             if case.state is CaseState.ATTEMPTING:
@@ -291,8 +320,6 @@ def run(
             else:
                 case.state = CaseState.ABANDONED
                 case.terminal_reason = "horizon reached"
-            if case.arm is Arm.TREATED:
-                _observe(cohort, case, diagnoses, recovered=False)
 
     if isinstance(llm, ClaudeDiagnoser):
         llm_stats.calls = llm.calls
@@ -310,21 +337,17 @@ def run(
         deduped=outbox.deduped,
         cohorts_learned=cohort.cohorts_seen(),
         llm=llm_stats,
+        cohorts_confident=cohort.cohorts_confident(),
+        decisions_priced_by_t2=decisions_priced_by_t2,
+        redispatched=outbox.redispatched,
     )
 
 
-def _recover(case: Case, ledger, now: datetime, detail: str, cohort, diagnoses) -> None:
+def _recover(case: Case, ledger, now: datetime, detail: str) -> None:
     case.state = CaseState.RECOVERED
     case.recovered_at = now
     case.terminal_reason = detail
     _outcome(ledger, case, now, "recovered", detail)
-    if case.arm is Arm.TREATED:
-        _observe(cohort, case, diagnoses, recovered=True)
-
-
-def _observe(cohort, case: Case, diagnoses, *, recovered: bool) -> None:
-    key = cohort.key(case.issuer, case.instrument, case.amount_band(), case.created_at.hour)
-    cohort.observe(key, recovered)
 
 
 def _outcome(ledger, case: Case, now: datetime, state: str, detail: str) -> None:
@@ -376,7 +399,9 @@ def main() -> int:
     print(render(result.cases, result.restraint, result.action_cost, llm=result.llm))
     print(f"ledger events: {len(result.ledger):,}   "
           f"dispatched: {result.dispatched:,}   deduped: {result.deduped:,}   "
-          f"cohorts learned: {result.cohorts_learned:,}"
+          f"cohorts learned: {result.cohorts_learned:,} "
+          f"({result.cohorts_confident:,} confident)   "
+          f"decisions priced by T2: {result.decisions_priced_by_t2:,}"
           + (f"   ledger: {args.db}" if args.ledger == "sqlite" else ""))
 
     if args.html:

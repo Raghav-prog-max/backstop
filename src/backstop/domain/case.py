@@ -77,6 +77,9 @@ class Case:
     tier: str = ""
 
     retries_used: int = 0
+    # e-mandate: when the pre-debit notice for the next debit was delivered. Set only
+    # from a dispatched notice's result, cleared once a debit consumes it.
+    mandate_notice_sent_at: datetime | None = None
     contacts_by_channel: dict[Channel, int] = field(default_factory=dict)
     opted_out: bool = False
     dispute_open: bool = False

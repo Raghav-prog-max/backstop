@@ -20,7 +20,8 @@ serve = ["fastapi>=0.115", "uvicorn>=0.32"]
 llm = ["anthropic>=1.0"]
 postgres = ["sqlalchemy>=2.0", "psycopg[binary]>=3.2"]
 workflow = ["temporalio>=1.7"]
-dev = ["pytest>=8.0"]
+# httpx2 is the transport fastapi's TestClient needs; without it tests/test_api.py skips.
+dev = ["pytest>=8.0", "httpx2"]
 
 [project.scripts]
 backstop = "backstop.runner:main"

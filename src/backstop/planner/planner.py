@@ -18,6 +18,7 @@ from ..diagnosis.engine import Diagnosis
 from ..diagnosis.taxonomy import NO_RETRY_CAUSES
 from ..domain.case import Case
 from ..domain.types import CaseType, CauseClass, Channel, MessageClass
+from ..policy.config import PolicyConfig
 from .actions import Action, ActionKind
 
 MESSAGE_TEMPLATES = ("plain_reminder", "one_tap_link", "value_reminder")
@@ -37,9 +38,15 @@ def message_class_for(case: Case) -> MessageClass:
 
 
 class Planner:
-    def __init__(self, epsilon: float = 0.1, rng: random.Random | None = None) -> None:
+    def __init__(self, epsilon: float = 0.1, rng: random.Random | None = None,
+                 mandate_notice_hours: int | None = None) -> None:
         self.epsilon = epsilon
         self.rng = rng or random.Random(0)
+        # PR-05's lead time, read from the policy config rather than restated here.
+        self.mandate_notice = timedelta(
+            hours=mandate_notice_hours if mandate_notice_hours is not None
+            else PolicyConfig().mandate_notice_hours
+        )
 
     def next_action(self, case: Case, dx: Diagnosis, now: datetime) -> Action:
         candidates = self._candidates(case, dx, now)
@@ -67,7 +74,18 @@ class Planner:
 
         if not retry_pointless:
             fire_at = max(now, dx.retry_window_start)
-            out.append(Action(ActionKind.RETRY_PAYMENT, fire_at))
+            if case.case_type is CaseType.MANDATE_LAPSE:
+                if case.mandate_notice_sent_at is None:
+                    # No debit without notice. Proposing the retry anyway would only
+                    # be deferred by PR-05, forever; the notice is the next step.
+                    out.append(Action(ActionKind.PRE_DEBIT_NOTICE, now, channel=Channel.SMS,
+                                      template="pre_debit_notice",
+                                      message_class=MessageClass.SERVICE))
+                else:
+                    fire_at = max(fire_at, case.mandate_notice_sent_at + self.mandate_notice)
+                    out.append(Action(ActionKind.RETRY_PAYMENT, fire_at))
+            else:
+                out.append(Action(ActionKind.RETRY_PAYMENT, fire_at))
 
         if retry_pointless or needs_credential:
             # Retry cannot work by construction; the customer has to act.
@@ -132,6 +150,13 @@ class Planner:
         if action.kind is ActionKind.WAIT:
             # Waiting is worth something when the retry window has not opened yet.
             return 1.0 if now < dx.retry_window_start else 0.5
+
+        if action.kind is ActionKind.PRE_DEBIT_NOTICE:
+            # Worth what the debit it unlocks is worth, from the earliest time that
+            # debit could lawfully fire.
+            retry = Action(ActionKind.RETRY_PAYMENT,
+                           max(now + self.mandate_notice, dx.retry_window_start))
+            return self._score(retry, case, dx, now)
 
         uplift = _UPLIFT.get(action.kind, 0.02)
         if action.kind is ActionKind.RETRY_PAYMENT:

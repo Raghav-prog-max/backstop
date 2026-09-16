@@ -6,7 +6,7 @@ boundary — including, especially, a T3 one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Protocol
 
@@ -114,3 +114,23 @@ class DiagnosisEngine:
             advice=advice,
             evidence=evidence,
         )
+
+    def refresh(self, case: Case, dx: Diagnosis) -> Diagnosis:
+        """Re-price an existing diagnosis against what the cohort has learned since.
+
+        The cause, the advice and any model evidence are kept as they are — nothing is
+        sent to a model twice. Only the posterior moves, so a decision on day ten is
+        priced by nine days of outcomes rather than by the intake-day prior.
+        """
+        key = self.cohort.key(
+            case.issuer, case.instrument, case.amount_band(), case.created_at.hour
+        )
+        post = self.cohort.posterior(key, COARSE_PRIOR[dx.cause_class])
+        tier = dx.tier
+        evidence = dx.evidence
+        if post.tier_confident and tier != "T0":
+            tier = "T2"
+            if not any(e.tier == "T2" for e in evidence):
+                evidence = [*evidence, Evidence("cohort", "/".join(key), "T2")]
+        return replace(dx, recoverability=post.mean, posterior_n=post.n,
+                       tier=tier, evidence=evidence)

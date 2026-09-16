@@ -101,6 +101,7 @@ class PolicyConfig:
 DEFAULT_ACTION_COSTS: dict[str, int] = {
     "wait": 0,
     "retry_payment": 200,
+    "pre_debit_notice": 150,
     "switch_instrument": 200,
     "request_reauth_link": 400,
     "send_message": 600,
