@@ -4,7 +4,7 @@
     {
       "name": "backstop-api",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "backstop.api"],
+      "runtimeArgs": ["run_api.py"],
       "port": 8010
     },
     {

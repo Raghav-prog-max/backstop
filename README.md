@@ -99,6 +99,9 @@ ledger replay, driven live rather than exported. Two processes:
 python -m pip install -e ".[serve]" && python -m backstop.api
 ```
 
+(`python run_api.py` does the same thing, and picks the project's `.venv` when there
+is one, so the API starts without activating anything.)
+
 ```bash
 cd console && npm install && npm run dev
 ```
