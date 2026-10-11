@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..diagnosis.llm import ClaudeDiagnoser
 from ..domain.case import Case
 from ..domain.types import Arm, CaseState, rupees
-from ..measurement.report import compute_lift, decompose
+from ..measurement.report import FDR_ALPHA, apply_fdr, compute_lift, decompose
 from ..reporting.whynot import RULE_NAMES, extract
 from ..runner import BatchResult, run
 
@@ -72,7 +72,12 @@ def _lift_json(lift) -> dict[str, Any]:
         "holdout_rate": round(lift.holdout.rate, 4),
         "lift_pp": round(lift.lift_pp, 2),
         "ci_pp": round(lift.ci_pp, 2),
+        # Clears its own interval; see `survives_fdr` before calling it a finding.
         "significant": lift.significant,
+        "p_value": round(lift.p_value, 5),
+        "q_value": round(lift.q_value, 5),
+        "survives_fdr": lift.survives_fdr,
+        "testable": lift.testable,
         "incremental_paise": lift.incremental_paise,
         "incremental_ci_paise": lift.incremental_ci_paise,
     }
@@ -127,6 +132,16 @@ def summary(batch_id: str) -> dict[str, Any]:
     b = _get(batch_id)
     cases = b.result.cases
     overall = compute_lift(cases, money_ci_draws=400)
+    # One correction across every slice the console shows, for the same reason the
+    # CLI applies one: the reader sees them together.
+    groups = {name: decompose(cases, fn) for name, fn in (
+        ("case_type", lambda c: c.case_type.value),
+        ("cause", lambda c: c.cause.value),
+        ("amount_band", lambda c: c.amount_band()),
+        ("issuer", lambda c: c.issuer),
+        ("tier", lambda c: c.tier or "n/a"),
+    )}
+    tested = apply_fdr(groups)
     r = b.result.restraint
     treated = [c for c in cases if c.arm is Arm.TREATED]
     at_risk = sum(c.amount_paise for c in cases)
@@ -152,16 +167,9 @@ def summary(batch_id: str) -> dict[str, Any]:
             "net": rupees(overall.incremental_paise - b.result.action_cost),
         },
         "lift": _lift_json(overall),
-        "decomposition": {
-            name: {k: _lift_json(v) for k, v in decompose(cases, fn).items()}
-            for name, fn in (
-                ("case_type", lambda c: c.case_type.value),
-                ("cause", lambda c: c.cause.value),
-                ("amount_band", lambda c: c.amount_band()),
-                ("issuer", lambda c: c.issuer),
-                ("tier", lambda c: c.tier or "n/a"),
-            )
-        },
+        "decomposition": {name: {k: _lift_json(v) for k, v in buckets.items()}
+                          for name, buckets in groups.items()},
+        "fdr": {"alpha": FDR_ALPHA, "tests": tested},
         "llm": {
             "enabled": b.result.llm.enabled,
             "model": b.result.llm.model,

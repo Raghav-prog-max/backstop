@@ -298,6 +298,10 @@ Two statistical choices that matter:
 - The rupee total is post-stratified on amount deciles, not priced off a single
   amount-weighted holdout rate, and it carries a percentile bootstrap interval. When
   that interval spans zero the report says to read the percentage instead.
+- The decomposition is corrected for multiplicity: about two dozen slices are tested
+  at 95%, so Benjamini-Hochberg at 5% FDR runs across all of them together. A slice
+  that clears its own interval but not the correction reads `(chance, q=0.06)`, not
+  as a finding.
 - Significance is additionally gated on `MIN_N_PER_ARM`. A cohort of six that happens
   to recover is not a finding, and the report marks it `(thin)`.
 

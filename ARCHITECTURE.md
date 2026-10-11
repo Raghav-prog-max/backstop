@@ -508,6 +508,14 @@ than shown a point estimate with three significant figures.
   significant — the exact overstatement this layer exists to prevent.
 - Significance is additionally gated on `MIN_N_PER_ARM`. A cohort of six that happens
   to recover is not a finding, and the report marks it `(thin)`.
+- **The decomposition is corrected for multiplicity.** Roughly two dozen slices are
+  tested at 95%, so one or two clear their interval from noise alone — and the one a
+  reader quotes is the most extreme of them. Benjamini-Hochberg at 5% FDR runs across
+  every slice in the report, because that is the set a reader actually scans; a slice
+  that clears its own interval but not the correction prints as `(chance, q=0.06)`
+  rather than as a result, and the header states how many tests were in the family.
+  Thin slices are excluded from it: they make no claim, so they cannot make a false
+  one, and counting them would only punish the slices that do.
 
 ### On the data
 
