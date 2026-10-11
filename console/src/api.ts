@@ -8,6 +8,9 @@ export type Lift = {
   lift_pp: number;
   ci_pp: number;
   significant: boolean;
+  survives_fdr: boolean;
+  testable: boolean;
+  q_value: number;
   incremental_paise: number;
   incremental_ci_paise: number;
 };
@@ -45,6 +48,7 @@ export type Summary = {
   };
   lift: Lift;
   decomposition: Record<string, Record<string, Lift>>;
+  fdr: { alpha: number; tests: number };
   restraint: {
     suppressed: number;
     escalated: number;

@@ -45,6 +45,17 @@ class Lift:
     # Half-width of the 95% bootstrap interval on the money, when one was asked for.
     # Zero means it was not computed, not that the estimate is exact.
     incremental_ci_paise: Paise = 0
+    # Two-sided p for "this slice's arms recover at the same rate".
+    p_value: float = 1.0
+    # Set by `apply_fdr` once the whole family of slices is known: a slice cannot be
+    # judged on its own when thirty of them are being read off one screen.
+    q_value: float = 1.0
+    survives_fdr: bool = False
+
+    @property
+    def testable(self) -> bool:
+        """Enough cases in both arms to make a claim at all."""
+        return self.treated.n >= MIN_N_PER_ARM and self.holdout.n >= MIN_N_PER_ARM
 
     @property
     def money_significant(self) -> bool:
@@ -111,12 +122,24 @@ def compute_lift(cases: list[Case], *, money_ci_draws: int = 0) -> Lift:
         p_adj = (s.recovered + 1) / (s.n + 2)
         return p_adj * (1 - p_adj) / (s.n + 2)
 
-    ci = Z_95 * math.sqrt(var(treated) + var(holdout))
+    se = math.sqrt(var(treated) + var(holdout))
+    ci = Z_95 * se
+
+    # The same adjusted proportions, read as a test rather than as an interval, so
+    # the p-value and the interval can never disagree about a slice.
+    if se > 0:
+        t_adj = (treated.recovered + 1) / (treated.n + 2) if treated.n else 0.0
+        h_adj = (holdout.recovered + 1) / (holdout.n + 2) if holdout.n else 0.0
+        z = abs(t_adj - h_adj) / se
+        p_value = math.erfc(z / math.sqrt(2))
+    else:
+        p_value = 1.0
 
     incremental = _incremental(cases)
     money_ci = _incremental_ci(cases, draws=money_ci_draws) if money_ci_draws else 0
 
-    return Lift(treated, holdout, lift * 100, ci * 100, incremental, money_ci)
+    return Lift(treated, holdout, lift * 100, ci * 100, incremental, money_ci,
+                p_value=p_value)
 
 
 # Amount strata for the money estimate, as quantiles of this batch's own amounts. A
@@ -205,6 +228,58 @@ def _incremental_ci(cases: list[Case], draws: int = 400, seed: int = 20_260_911)
     return int((hi - lo) / 2)
 
 
+# The slices the report prints. One list, because the family a correction applies to
+# has to be the family a reader actually looks at.
+DIMENSIONS: tuple[tuple[str, Any], ...] = (
+    ("by case type", lambda c: c.case_type.value),
+    ("by cause", lambda c: c.cause.value),
+    ("by amount band", lambda c: c.amount_band()),
+    ("by issuer", lambda c: c.issuer),
+    # T3 rows here are the model's contribution, measured the same way as everything
+    # else: against the holdout, with an interval.
+    ("by diagnosis tier", lambda c: c.tier or "n/a"),
+)
+
+FDR_ALPHA = 0.05
+
+
+def decompose_all(cases: list[Case]) -> dict[str, dict[str, Lift]]:
+    """Every slice in the report, with the multiple-comparisons correction applied."""
+    groups = {label: decompose(cases, fn) for label, fn in DIMENSIONS}
+    apply_fdr(groups)
+    return groups
+
+
+def apply_fdr(groups: dict[str, dict[str, Lift]], alpha: float = FDR_ALPHA) -> int:
+    """Benjamini-Hochberg across every slice the report shows, in place.
+
+    Thirty slices at 95% confidence produce one or two "findings" from noise alone,
+    and the one a reader quotes is the most extreme — which is exactly the
+    cherry-picking the decomposition exists to prevent. BH controls the share of
+    false claims among the claims made, which is the right question here: a few
+    uninteresting slices wrongly called flat costs nothing, one wrongly called a
+    result costs the whole table its credibility.
+
+    Slices too thin to be tested are not part of the family. They make no claim, so
+    they cannot make a false one, and counting them would only punish the slices that
+    do. Returns how many tests were actually in the family.
+    """
+    tested = [lf for buckets in groups.values() for lf in buckets.values() if lf.testable]
+    m = len(tested)
+    if not m:
+        return 0
+
+    ranked = sorted(tested, key=lambda lf: lf.p_value)
+    # Walk down from the largest p, carrying the smallest q seen so far: q is
+    # monotone in p, which keeps the table readable.
+    running = 1.0
+    for i in range(m - 1, -1, -1):
+        running = min(running, ranked[i].p_value * m / (i + 1))
+        ranked[i].q_value = min(running, 1.0)
+        ranked[i].survives_fdr = ranked[i].q_value <= alpha
+    return m
+
+
 def decompose(cases: list[Case], key) -> dict[str, Lift]:
     """Same lift, sliced. A thin cohort must read as thin, not as a result."""
     buckets: dict[str, list[Case]] = {}
@@ -251,21 +326,30 @@ def render(
     w(f"  lift      {overall.lift_pp:>+5.1f} pp  +/- {overall.ci_pp:.1f}  "
       f"({'significant' if overall.significant else 'NOT significant'} at 95%)")
     w("")
-    w("DECOMPOSITION  (lift pp +/- ci, n treated)")
-    for label, fn in (
-        ("by case type", lambda c: c.case_type.value),
-        ("by cause", lambda c: c.cause.value),
-        ("by amount band", lambda c: c.amount_band()),
-        ("by issuer", lambda c: c.issuer),
-        # T3 rows here are the model's contribution, measured the same way as
-        # everything else: against the holdout, with an interval.
-        ("by diagnosis tier", lambda c: c.tier or "n/a"),
-    ):
+    groups = {label: decompose(cases, fn) for label, fn in DIMENSIONS}
+    tested = apply_fdr(groups)
+    claimed = sum(1 for b in groups.values() for lf in b.values() if lf.survives_fdr)
+    nominal = sum(1 for b in groups.values() for lf in b.values()
+                  if lf.testable and lf.significant)
+    w(f"DECOMPOSITION  (lift pp +/- ci, n treated; {tested} slices tested, "
+      f"Benjamini-Hochberg at {FDR_ALPHA:.0%} FDR)")
+    for label in groups:
         w(f"  {label}")
-        for name, lf in decompose(cases, fn).items():
-            flag = "" if lf.significant else "   (thin)"
+        for name, lf in groups[label].items():
+            if not lf.testable:
+                flag = "   (thin)"
+            elif lf.survives_fdr:
+                flag = ""
+            elif lf.significant:
+                # Clears its own interval, does not survive the company it keeps.
+                flag = f"   (chance, q={lf.q_value:.2f})"
+            else:
+                flag = "   (flat)"
             w(f"    {name:<24} {lf.lift_pp:>+6.1f} +/- {lf.ci_pp:>4.1f}"
               f"   n={lf.treated.n:>5,}{flag}")
+    if nominal > claimed:
+        w(f"    {nominal - claimed} slice(s) clear their own interval but not the "
+          f"correction - at {tested} tests, roughly one is expected from noise alone.")
     w("")
     w("RESTRAINT")
     w(f"  cases suppressed          {restraint.suppressed:>14,}")

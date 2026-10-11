@@ -258,6 +258,11 @@ function BatchReport({ summary }: { summary: Summary }) {
       {Object.entries(summary.decomposition).map(([dim, buckets]) => (
         <div className="panel" key={dim} style={{ marginTop: 18 }}>
           <h2>Lift by {dim.replace("_", " ")}</h2>
+          <p className="muted" style={{ fontSize: 12, marginTop: -6 }}>
+            {summary.fdr.tests} slices tested across the whole report, Benjamini–Hochberg
+            at {(summary.fdr.alpha * 100).toFixed(0)}% FDR — a slice that clears its own
+            interval but not the correction is marked <em>by chance</em>.
+          </p>
           <div className="scroll">
             <table>
               <thead>
@@ -282,10 +287,16 @@ function BatchReport({ summary }: { summary: Summary }) {
                     <td className="num">{lf.treated_n.toLocaleString()}</td>
                     <td className="num">{lf.holdout_n.toLocaleString()}</td>
                     <td>
-                      {lf.significant ? (
+                      {lf.survives_fdr ? (
                         <span className="pill p-suppress">significant</span>
-                      ) : (
+                      ) : !lf.testable ? (
                         <span className="pill p-defer">thin</span>
+                      ) : lf.significant ? (
+                        <span className="pill p-deny" title={`q = ${lf.q_value.toFixed(2)}`}>
+                          by chance
+                        </span>
+                      ) : (
+                        <span className="pill p-defer">flat</span>
                       )}
                     </td>
                   </tr>
