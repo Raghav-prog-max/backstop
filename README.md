@@ -44,9 +44,11 @@ LIFT vs UNTOUCHED HOLDOUT
 
 Gross credits the agent with everything the treated arm recovered; only the gap over
 the untouched holdout is attributable, and that gap is the number the system is judged
-on. The lift holds across seeds (+26.2 pp averaged over three); the rupee figure does
-not, because it divides by a 580-case holdout with a long tail of invoice sizes — read
-the percentage, not the crore.
+on. The money figure is priced within amount strata and carries a bootstrap interval,
+and at a 10% holdout that interval spans zero — 580 untouched cases cannot pin down a
+total built from invoice sizes spanning four orders of magnitude. The report says so
+on the line itself. Precision there is bought with holdout: ±₹84 lakh at 10%, ±₹31
+lakh at 25%, ±₹26 lakh at 40%. The percentage lift is significant at all three.
 
 The planner begins each batch knowing nothing about what its actions are worth, and
 pays for that education as it goes. `--actions table.json` keeps what it learned:
@@ -293,6 +295,9 @@ Two statistical choices that matter:
   plain Wald interval collapses to ±0 when a recovery rate hits 0 or 1, which reports
   a one-versus-one cohort as significant — the exact overstatement this layer exists
   to prevent.
+- The rupee total is post-stratified on amount deciles, not priced off a single
+  amount-weighted holdout rate, and it carries a percentile bootstrap interval. When
+  that interval spans zero the report says to read the percentage instead.
 - Significance is additionally gated on `MIN_N_PER_ARM`. A cohort of six that happens
   to recover is not a finding, and the report marks it `(thin)`.
 

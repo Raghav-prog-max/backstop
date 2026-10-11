@@ -9,6 +9,7 @@ export type Lift = {
   ci_pp: number;
   significant: boolean;
   incremental_paise: number;
+  incremental_ci_paise: number;
 };
 
 export type LlmStats = {
@@ -37,6 +38,7 @@ export type Summary = {
     gross_paise: number;
     incremental: string;
     incremental_paise: number;
+    incremental_ci: string;
     action_cost: string;
     net: string;
     net_paise: number;
