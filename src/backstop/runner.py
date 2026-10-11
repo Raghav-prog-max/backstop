@@ -34,7 +34,7 @@ from .policy.engine import PolicyEngine
 from .policy.rules import CONTACT_ACTIONS, RuleContext
 from .reporting.whynot import extract, write_html
 from .sim.generator import generate
-from .sim.world import World
+from .sim.world import World, WorldConfig
 
 CONTACT_KINDS = CONTACT_ACTIONS
 # Gateway codes T1 can read. Anything else with free text attached is the T3 residual.
@@ -86,6 +86,7 @@ def run(
     ledger: LedgerStore | None = None,
     llm: LLMDiagnoser | None = None,
     actions: ActionModel | None = None,
+    world_config: "WorldConfig | None" = None,
 ) -> BatchResult:
     """`actions` carries what the planner learned in an earlier batch. A fresh model
     starts from a flat prior and pays for its education out of this batch's revenue;
@@ -101,7 +102,7 @@ def run(
     policy = PolicyEngine(PolicyConfig())
     planner = Planner(epsilon=0.02, rng=random.Random(seed + 1), actions=actions,
                       mandate_notice_hours=policy.config.mandate_notice_hours)
-    world = World(horizon_days=horizon_days, seed=seed + 2)
+    world = World(horizon_days=horizon_days, seed=seed + 2, config=world_config)
     outbox = Outbox(ledger, world)
 
     cases = generate(n_cases, start=start, seed=seed)

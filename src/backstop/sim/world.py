@@ -17,7 +17,7 @@ not measured production rates and are labelled as such everywhere they surface.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from ..domain.case import Case
@@ -75,6 +75,53 @@ PROMISE_RATE: dict[CauseClass, tuple[float, float]] = {
 PROMISE_HORIZON_DAYS = (3, 5, 7, 10)
 
 
+@dataclass(frozen=True, slots=True)
+class WorldConfig:
+    """The latent numbers the agent never sees, in one place so they can be moved.
+
+    They exist to be perturbed. A lift measured only in the world whose constants
+    were hand-calibrated by the same author proves less than it looks like it does,
+    so `backstop.robustness` re-runs the batch in deliberately wrong worlds and
+    checks the result survives. Defaults are the calibrated tables above.
+    """
+
+    self_heal: dict[CauseClass, float] = field(default_factory=lambda: dict(SELF_HEAL_OVER_HORIZON))
+    action_power: dict[ActionKind, float] = field(default_factory=lambda: dict(ACTION_POWER))
+    template_multiplier: dict[str, float] = field(default_factory=lambda: dict(TEMPLATE_MULTIPLIER))
+    promise_rate: dict[CauseClass, tuple[float, float]] = field(
+        default_factory=lambda: dict(PROMISE_RATE))
+    # How much a failed contact tires a customer, and how fast that turns into
+    # leaving altogether.
+    fatigue_per_contact: float = 0.18
+    opt_out_per_contact: float = 0.04
+    # Spread of how responsive customers are to anything at all.
+    responsiveness_shape: tuple[float, float] = (2.2, 2.2)
+
+    def scaled(self, *, self_heal: float = 1.0, action_power: float = 1.0,
+               templates: float = 1.0, promise_keep: float = 1.0,
+               fatigue: float = 1.0, opt_out: float = 1.0) -> "WorldConfig":
+        """A world like this one with the named forces turned up or down.
+
+        `templates` pulls the per-template multipliers toward 1.0 (0.0 flattens them
+        entirely), which is how to ask whether the planner's template learning was
+        finding something real or fitting noise.
+        """
+        def clamp(x: float) -> float:
+            return min(max(x, 0.0), 0.99)
+
+        return WorldConfig(
+            self_heal={k: clamp(v * self_heal) for k, v in self.self_heal.items()},
+            action_power={k: clamp(v * action_power) for k, v in self.action_power.items()},
+            template_multiplier={k: 1.0 + (v - 1.0) * templates
+                                 for k, v in self.template_multiplier.items()},
+            promise_rate={k: (c, clamp(kp * promise_keep))
+                          for k, (c, kp) in self.promise_rate.items()},
+            fatigue_per_contact=self.fatigue_per_contact * fatigue,
+            opt_out_per_contact=self.opt_out_per_contact * opt_out,
+            responsiveness_shape=self.responsiveness_shape,
+        )
+
+
 @dataclass(slots=True)
 class Latent:
     daily_self_heal: float
@@ -85,8 +132,10 @@ class Latent:
 
 
 class World:
-    def __init__(self, horizon_days: int, seed: int = 7) -> None:
+    def __init__(self, horizon_days: int, seed: int = 7,
+                 config: WorldConfig | None = None) -> None:
         self.horizon_days = horizon_days
+        self.cfg = config or WorldConfig()
         self.rng = random.Random(seed)
         self._latent: dict[str, Latent] = {}
         # The cause the world behaves according to (corpus truth for residual cases).
@@ -98,12 +147,12 @@ class World:
         # behave, and the measured T3 lift would be a simulator artefact.
         truth = latent_cause(case)
         effective = truth if truth is not None else cause
-        total = SELF_HEAL_OVER_HORIZON.get(effective, 0.12)
+        total = self.cfg.self_heal.get(effective, 0.12)
         # Convert a horizon probability into a per-day hazard.
         daily = 1.0 - (1.0 - total) ** (1.0 / self.horizon_days)
         self._latent[case.case_id] = Latent(
             daily_self_heal=daily,
-            responsiveness=self.rng.betavariate(2.2, 2.2),
+            responsiveness=self.rng.betavariate(*self.cfg.responsiveness_shape),
         )
         self._cause[case.case_id] = effective
 
@@ -132,7 +181,7 @@ class World:
         lat = self._latent[case.case_id]
 
         if action.kind is ActionKind.REQUEST_PROMISE_TO_PAY:
-            commit_p, keep_p = PROMISE_RATE.get(self._cause[case.case_id], (0.35, 0.60))
+            commit_p, keep_p = self.cfg.promise_rate.get(self._cause[case.case_id], (0.35, 0.60))
             commit_p *= max(0.25, 1.0 - lat.fatigue)
             if action.channel is not None and action.channel.value == "voice":
                 commit_p *= 1.25  # a call gets a date more often than an email does
@@ -143,8 +192,8 @@ class World:
                                     promise_until=until)
             lat.fatigue += 0.12
             return ActionResult(ok=False, detail=f"{action} no commitment")
-        power = ACTION_POWER.get(action.kind, 0.05)
-        power *= TEMPLATE_MULTIPLIER.get(action.template or "", 1.0)
+        power = self.cfg.action_power.get(action.kind, 0.05)
+        power *= self.cfg.template_multiplier.get(action.template or "", 1.0)
         # Each prior contact makes the next one less effective, not more.
         power *= max(0.25, 1.0 - lat.fatigue)
 
@@ -159,9 +208,9 @@ class World:
             ActionKind.VOICE_CALL,
             ActionKind.REQUEST_REAUTH_LINK,
         ):
-            lat.fatigue += 0.18
+            lat.fatigue += self.cfg.fatigue_per_contact
             # A fatigued customer sometimes just leaves.
-            if self.rng.random() < 0.04 * case.contacts_total:
+            if self.rng.random() < self.cfg.opt_out_per_contact * case.contacts_total:
                 case.opted_out = True
                 return ActionResult(ok=False, detail=f"{action} -> customer opted out")
 

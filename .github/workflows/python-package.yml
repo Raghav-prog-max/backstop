@@ -42,3 +42,6 @@ jobs:
     - name: Batch runs end to end
       run: |
         python -m backstop.runner --cases 1000 --days 7 --html why_not.html
+    - name: Lift survives a world it was not tuned in
+      run: |
+        python -m backstop.robustness --cases 1200 --days 8 --seeds 2 --strict

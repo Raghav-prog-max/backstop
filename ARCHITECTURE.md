@@ -526,6 +526,44 @@ plausible ranges — they are **not** measured production rates. Declared-synthe
 costs nothing with a technical panel; undeclared-synthetic presented as production
 data costs everything.
 
+### Measured somewhere other than the world it was tuned in
+
+Everything above is measured in a simulator whose constants this document also
+publishes, calibrated by hand by the author of the agent. That is declared, but
+declaring it does not answer the question a reviewer should ask: how much of the
+lift is the strategy, and how much is the world suiting the strategy?
+
+[`robustness.py`](src/backstop/robustness.py) answers it by moving the world. The
+latent tables live in [`WorldConfig`](src/backstop/sim/world.py) so they can be
+scaled, and the sweep re-runs the batch across seeds in worlds that each remove
+something the agent leans on:
+
+```
+  world                 mean lift   worst   sig   c/rec  what changed
+
+  calibrated               +24.7   +22.3   3/3    1.49  the tuned world the numbers were quoted in
+  self-heal x1.6           +17.1   +16.3   3/3    1.31  most cases fix themselves; little left to attribute
+  self-heal x0.5           +28.3   +27.7   3/3    2.23  almost nothing self-heals; the holdout recovers rarely
+  actions x0.5             +13.7   +12.6   3/3    2.02  everything the agent does works half as well
+  flat templates           +25.6   +23.6   3/3    1.56  every template identical; nothing for the planner to learn
+  promises x0.5            +22.9   +22.3   3/3    1.56  buyers name dates and break them
+  fragile customers        +24.0   +22.7   3/3    1.51  contact fatigue and opt-outs twice as fast
+  hostile                  +15.5   +12.4   3/3    1.45  several at once, all unfavourable
+```
+
+The agent is significantly positive in every seed of every world, and the lift moves
+in the direction each change predicts: least where self-heal is high (little left to
+attribute) and where actions are weak, most where almost nothing recovers on its
+own. `flat templates` is the control for the learned planner — with every template
+identical there is nothing for it to find, and the result is unchanged, which is
+what it should be if the template learning was finding something real rather than
+fitting noise.
+
+`--transfer` additionally carries a table learned in the calibrated world into each
+of the others. In these runs it never cost anything, but which world gains most
+moves between runs, so the honest reading is "a stale table did no harm here", not a
+measured per-world benefit.
+
 ## 11. The Why-not view
 
 The screen that answers *stopping rules and audit trails*
