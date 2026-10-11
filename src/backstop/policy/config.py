@@ -78,6 +78,12 @@ class PolicyConfig:
     merchant_margin: float = 0.18
     action_cost_paise: dict[str, int] | None = None
     goodwill_cost_per_contact_paise: int = 1_500
+    # What losing the customer costs, as a multiple of the amount on the case: the
+    # revenue that walks out with them, over and above the case itself. The planner
+    # learns how likely a given contact is to end the relationship; how much that
+    # matters is a merchant's judgement, not something one batch can discover, so it
+    # is set here and versioned with the rest of the config rather than inferred.
+    optout_lifetime_multiple: float = 3.0
 
     # --- PR-08 ---
     promise_grace_hours: int = 48

@@ -121,7 +121,8 @@ def decompose(cases: list[Case], key) -> dict[str, Lift]:
 
 
 def render(
-    cases: list[Case], restraint: Restraint, action_cost_paise: Paise, *, llm: Any = None
+    cases: list[Case], restraint: Restraint, action_cost_paise: Paise, *,
+    llm: Any = None, actions: list | None = None
 ) -> str:
     """`llm` is the runner's LLMStats (duck-typed here to keep this module free of the
     runner). None or `enabled=False` renders the T3 block as off — still printed, so a
@@ -193,4 +194,18 @@ def render(
         w(f"  refusals                  {llm.refusals:>14,}")
         w(f"  tokens in / out           {llm.input_tokens:>7,} / {llm.output_tokens:<6,}")
     w("")
+    if actions:
+        # The table that used to be hand-set constants, printed so it can be argued
+        # with: what each action did in this batch, and what the planner now believes.
+        value = [a for a in actions if not a[0].startswith("opt_out/")]
+        harm = [a for a in actions if a[0].startswith("opt_out/") and a[1] >= 50]
+        w("WHAT THE PLANNER LEARNED  (from this batch's own outcomes, no priors set by hand)")
+        w(f"    {'action  (#n = contacts already made)':<40}{'used':>9}{'worked':>9}{'estimate':>11}")
+        for label, trials, rate, mean in value[:12]:
+            w(f"    {label:<40}{trials:>9,}{rate * 100:>8.1f}%{mean:>10.1%}")
+        if harm:
+            w("  and what it cost: contacts that ended the relationship")
+            for label, trials, rate, _ in harm:
+                w(f"    {label[len('opt_out/'):]:<40}{trials:>9,}{rate * 100:>8.1f}%")
+        w("")
     return "\n".join(out)

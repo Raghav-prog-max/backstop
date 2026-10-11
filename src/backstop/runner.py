@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import random
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -26,6 +27,7 @@ from .ledger.store import InMemoryLedger, LedgerStore
 from .measurement.assignment import assign
 from .measurement.report import Restraint, render
 from .planner.actions import ActionKind
+from .planner.learning import ActionModel
 from .planner.planner import Planner
 from .policy.config import PolicyConfig
 from .policy.engine import PolicyEngine
@@ -65,6 +67,10 @@ class BatchResult:
     cohorts_learned: int
     llm: LLMStats = field(default_factory=LLMStats)
     cohorts_confident: int = 0
+    # What the planner learned each action is worth, busiest arm first.
+    action_arms: list = field(default_factory=list)
+    # The model itself, for a caller that wants to carry it to the next batch.
+    actions: ActionModel | None = None
     # Policy decisions whose expected recovery came from a confident cohort posterior
     # rather than the intake-day prior. Zero here means T2 is decoration.
     decisions_priced_by_t2: int = 0
@@ -79,7 +85,11 @@ def run(
     *,
     ledger: LedgerStore | None = None,
     llm: LLMDiagnoser | None = None,
+    actions: ActionModel | None = None,
 ) -> BatchResult:
+    """`actions` carries what the planner learned in an earlier batch. A fresh model
+    starts from a flat prior and pays for its education out of this batch's revenue;
+    in production the table is the thing that persists between runs."""
     start = datetime(2026, 9, 1, 9, 0)
     rng = random.Random(seed)
 
@@ -89,7 +99,7 @@ def run(
     llm_stats = LLMStats(enabled=llm is not None,
                          model=getattr(llm, "model", type(llm).__name__ if llm else ""))
     policy = PolicyEngine(PolicyConfig())
-    planner = Planner(epsilon=0.1, rng=random.Random(seed + 1),
+    planner = Planner(epsilon=0.02, rng=random.Random(seed + 1), actions=actions,
                       mandate_notice_hours=policy.config.mandate_notice_hours)
     world = World(horizon_days=horizon_days, seed=seed + 2)
     outbox = Outbox(ledger, world)
@@ -101,6 +111,10 @@ def run(
     diagnoses = {}
     last_retry: dict[str, datetime] = {}
     attempts: dict[str, int] = {}
+    # Arms waiting on an outcome that has not happened yet: the promise that has not
+    # fallen due, the escalated case that has not ended. Crediting them at dispatch
+    # would teach the planner that obtaining a date is the same as being paid.
+    pending_promise: dict[str, tuple] = {}
 
     for case in cases:
         case.arm = assign(case.case_id, holdout)
@@ -172,13 +186,18 @@ def run(
             # the case today: either the buyer paid, or the promise is now information.
             if case.promise_status == "open" and case.promise_until is not None \
                     and now >= case.promise_until:
+                settled = pending_promise.pop(case.case_id, None)
                 if world.promise_resolves(case):
+                    if settled is not None:
+                        planner.settle(settled, success=True)
                     case.promise_status = "kept"
                     restraint.promises_kept += 1
                     ledger.append(CaseEvent(case.case_id, EventKind.NOTE, now,
                                             payload={"promise": "kept"}, actor="system"))
                     _recover(case, ledger, now, "promise kept")
                     continue
+                if settled is not None:
+                    planner.settle(settled, success=False)
                 case.promise_status = "broken"
                 case.promises_broken += 1
                 restraint.promises_broken += 1
@@ -273,6 +292,12 @@ def run(
             attempts[case.case_id] = attempts.get(case.case_id, 0) + 1
             result = outbox.queue_and_dispatch(case, action, attempts[case.case_id], now)
             action_cost += policy.config.cost_of(action.kind.value)
+            # The planner pays for what it does by learning from it. A promise-to-pay
+            # counts as the result it sought; whether the buyer keeps it is the
+            # separate question PR-08 and the report already track.
+            planner.observe(case, dx, action, success=result.ok)
+            if action.kind in CONTACT_KINDS:
+                planner.observe_contact(case, dx, action, opted_out=case.opted_out)
 
             if action.kind is ActionKind.RETRY_PAYMENT:
                 case.retries_used += 1
@@ -289,6 +314,9 @@ def run(
                 _recover(case, ledger, now, str(action))
             elif result and result.promise_until is not None:
                 # Not a recovery — a date. PR-08 now holds all contact until it passes.
+                # The ask itself was already credited; what is still open is whether
+                # the date holds.
+                pending_promise[case.case_id] = planner.keep_arm_for(case, dx)
                 case.promise_until = result.promise_until
                 case.promise_status = "open"
                 case.promises_made += 1
@@ -321,6 +349,10 @@ def run(
                 case.state = CaseState.ABANDONED
                 case.terminal_reason = "horizon reached"
 
+    # A promise still open when the horizon closes was never kept.
+    for arm in pending_promise.values():
+        planner.settle(arm, success=False)
+
     if isinstance(llm, ClaudeDiagnoser):
         llm_stats.calls = llm.calls
         llm_stats.refusals = llm.refusals
@@ -338,6 +370,8 @@ def run(
         cohorts_learned=cohort.cohorts_seen(),
         llm=llm_stats,
         cohorts_confident=cohort.cohorts_confident(),
+        action_arms=planner.actions.general_arms(),
+        actions=planner.actions,
         decisions_priced_by_t2=decisions_priced_by_t2,
         redispatched=outbox.redispatched,
     )
@@ -375,6 +409,10 @@ def main() -> int:
                     help="where the append-only ledger lives for this run")
     ap.add_argument("--db", metavar="PATH", default="backstop.db",
                     help="SQLite file for --ledger sqlite (default: backstop.db)")
+    ap.add_argument("--actions", metavar="PATH", default=None,
+                    help="JSON file holding what the planner has learned. Loaded before "
+                         "the batch when it exists and written after, so a second run "
+                         "starts trained instead of paying for the lesson again")
     ap.add_argument("--llm", choices=("auto", "claude", "none"), default="auto",
                     help="T3 diagnoser for the free-text residual. auto = Claude when "
                          "ANTHROPIC_API_KEY is set, otherwise none (the default NoLLM)")
@@ -394,14 +432,25 @@ def main() -> int:
         if llm is None and args.llm == "claude":
             ap.error("--llm claude needs ANTHROPIC_API_KEY and `pip install -e \".[llm]\"`")
 
-    result = run(args.cases, args.days, args.holdout, args.seed, ledger=ledger, llm=llm)
+    actions: ActionModel | None = None
+    actions_path = Path(args.actions) if args.actions else None
+    if actions_path is not None and actions_path.exists():
+        actions = ActionModel.from_json(actions_path.read_text())
 
-    print(render(result.cases, result.restraint, result.action_cost, llm=result.llm))
+    result = run(args.cases, args.days, args.holdout, args.seed, ledger=ledger, llm=llm,
+                 actions=actions)
+
+    if actions_path is not None:
+        actions_path.write_text(result.actions.to_json())
+
+    print(render(result.cases, result.restraint, result.action_cost, llm=result.llm,
+                 actions=result.action_arms))
     print(f"ledger events: {len(result.ledger):,}   "
           f"dispatched: {result.dispatched:,}   deduped: {result.deduped:,}   "
           f"cohorts learned: {result.cohorts_learned:,} "
           f"({result.cohorts_confident:,} confident)   "
           f"decisions priced by T2: {result.decisions_priced_by_t2:,}"
+          + (f"   actions: {args.actions}" if args.actions else "")
           + (f"   ledger: {args.db}" if args.ledger == "sqlite" else ""))
 
     if args.html:

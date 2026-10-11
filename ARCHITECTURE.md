@@ -348,10 +348,59 @@ back to the buyer). The report shows promises obtained, kept and broken side by 
 because a collections agent that obtains many promises and keeps few is a worse
 agent, not a busier one.
 
-Selection is a scored policy over `(action, template, timing)` with ε-greedy
-exploration. The exploration is not decoration — it generates the variance the
-measurement layer needs in order to attribute anything. A purely greedy planner
-produces a system that cannot explain its own results.
+### What an action is worth is learned, not asserted
+
+Selection is a scored policy over `(action, template, timing)`:
+
+```
+value = amount x P(recover) x P(this action works) - cost - P(opt out) x what leaving costs
+```
+
+Only the first term was ever in doubt. The middle one used to be a table of constants
+in the planner, and the problem with it was not that the numbers were guesses — it is
+that they were guesses written by someone who had also written the simulator. A
+reviewer could not separate "the agent decides well" from "the author knew the
+answers". So the table is gone, and
+[`ActionModel`](src/backstop/planner/learning.py) learns it:
+
+- **A Beta posterior per arm**, keyed by `(case type, cause, action, template, stage)`,
+  where stage is how many contacts or retries the case has already had — so the model
+  can discover that a fifth message is not a first one. Thin arms lean on their
+  general `(action, template, stage)` arm until they have evidence of their own.
+- **Thompson sampling, not ε-greedy.** A draw from the posterior is what makes an
+  untried arm worth trying, and it is what keeps feeding the measurement layer the
+  variance it needs to attribute anything. ε stays at 0.02 for the arms no case has
+  reached yet; the old 0.1 was buying random contacts the model no longer needs.
+- **A promise is scored as money, not as a date.** The ask is one arm, `promise_kept`
+  is another, and the value of asking is the product. Crediting the ask alone is "a
+  promise is not a recovery" in bandit form; waiting for the date to fall due before
+  crediting anything starves the arm, because refusals land today and kept promises
+  land next week.
+- **Contacts are charged for the customers they lose.** The opt-out hazard per stage
+  is learned the same way, and priced at `optout_lifetime_multiple` x the amount —
+  how likely is a judgement the data can make, how much it matters is a merchant's,
+  so it is versioned config rather than inferred from one batch.
+- **Escalation is not an arm.** The only way an escalated case comes back is the
+  customer paying on their own, so an arm for it would learn the self-heal rate, call
+  it the value of hiring a human, and buy more of the most expensive action there is.
+  It keeps a stated value and is priced against its cost like everything else.
+
+The report prints the table it ended with — used, worked, estimate, per arm — so the
+numbers the planner acted on can be argued with instead of taken on faith.
+
+**What it costs and what it buys.** A cold model pays for its education out of the
+batch it is learning in. Against the old hand-set table, over three seeds of
+6,000 cases:
+
+| | lift | gross | contacts per recovery | opt-outs |
+|---|---|---|---|---|
+| Hand-set constants (what the simulator's author knew) | +26.6 pp | ₹2.80 cr | 1.43 | 43 |
+| Learned, cold start | +26.2 pp | ₹2.37 cr | 1.56 | 22 |
+| Learned, carried from two earlier batches | +27.6 pp | ₹2.92 cr | 1.18 | 7 |
+
+Cold, it gives up about 15% of gross to the oracle and halves the opt-outs. Warm, it
+beats the oracle on every column — which is the honest shape of the claim: the table
+is worth having, and it is worth keeping between batches (`--actions out.json`).
 
 ## 9. Executors and the outbox
 
