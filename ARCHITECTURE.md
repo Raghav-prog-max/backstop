@@ -462,6 +462,45 @@ showed a flat lift until this was corrected.
   regression, and the report makes that visible.
 - **Replay** — any case reconstructed from the log, in order.
 
+### The rupee figure is the fragile one, and says so
+
+Recovery rates are counts. Rupees are counts multiplied by an amount distribution
+spanning four orders of magnitude, and the money estimate inherits that tail. Two
+changes keep it honest.
+
+**It is priced within amount strata.** The obvious estimator — the holdout's
+amount-weighted recovery rate, applied to the treated arm's money — asks a few
+hundred heavy-tailed cases to stand in for the whole batch, and whether two or three
+large invoices landed in the holdout and self-paid moves the headline by crores.
+Post-stratifying on amount deciles prices a difference in *rates* at the treated
+arm's own money within each stratum, where the amounts are comparable; a stratum
+with fewer than five holdout cases borrows the pooled difference rather than
+inventing a local one.
+
+**It carries a bootstrap interval, and the report will say the number is noise.** The
+interval is a percentile bootstrap resampled within arm. At the default 10% holdout
+it routinely spans zero while the percentage lift is comfortably significant, and the
+headline prints exactly that:
+
+```
+recovered incremental     Rs 3,103,728.93  +/- Rs 8,088,129.51  <- attributable
+                          (interval spans zero - read the pp lift below, not this)
+```
+
+That is not a defect in the estimator; it is the batch being honest about what 580
+untouched cases can support. Widening the holdout is what buys precision, and the
+report is the place to see the price:
+
+| holdout | untouched cases | money | pp lift |
+|---|---|---|---|
+| 10% | 580 | ₹31.0 lakh ± 83.9 | +26.6 ± 3.8 |
+| 25% | 1,516 | ₹36.6 lakh ± 31.1 | +24.0 ± 2.7 |
+| 40% | 2,377 | ₹23.4 lakh ± 26.4 | +24.1 ± 2.4 |
+
+A merchant who needs the money number to clear its own interval is buying that
+precision with revenue left untouched, and should be told the exchange rate rather
+than shown a point estimate with three significant figures.
+
 ### Two statistical choices that matter
 
 - The interval is **Agresti–Caffo**, not Wald. A plain Wald interval collapses to ±0

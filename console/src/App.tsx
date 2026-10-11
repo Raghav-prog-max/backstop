@@ -212,7 +212,7 @@ function BatchReport({ summary }: { summary: Summary }) {
         <Kpi label="Amount at risk" value={h.amount_at_risk} />
         <Kpi label="Recovered gross" value={h.gross} />
         <Kpi label="Recovered incremental" value={h.incremental} accent
-          sub="attributable to the agent" />
+          sub={`+/- ${h.incremental_ci} (95%) - attributable to the agent`} />
         <Kpi label="Action cost" value={h.action_cost} small />
         <Kpi label="Net" value={h.net} accent small />
       </dl>
@@ -225,7 +225,10 @@ function BatchReport({ summary }: { summary: Summary }) {
             Gross recovery credits the agent with everything the treated arm recovered.
             Only the gap over the holdout is attributable — here{" "}
             <strong>{rupees(summary.lift.incremental_paise)}</strong> of{" "}
-            {h.gross}.
+            {h.gross}.{" "}
+            {Math.abs(summary.lift.incremental_paise) <= summary.lift.incremental_ci_paise
+              ? "That rupee figure's interval spans zero: amounts here are heavy-tailed and the holdout is small, so read the percentage, not the money."
+              : null}
           </p>
         </div>
 

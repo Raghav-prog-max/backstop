@@ -74,6 +74,7 @@ def _lift_json(lift) -> dict[str, Any]:
         "ci_pp": round(lift.ci_pp, 2),
         "significant": lift.significant,
         "incremental_paise": lift.incremental_paise,
+        "incremental_ci_paise": lift.incremental_ci_paise,
     }
 
 
@@ -125,7 +126,7 @@ def list_batches() -> list[dict[str, Any]]:
 def summary(batch_id: str) -> dict[str, Any]:
     b = _get(batch_id)
     cases = b.result.cases
-    overall = compute_lift(cases)
+    overall = compute_lift(cases, money_ci_draws=400)
     r = b.result.restraint
     treated = [c for c in cases if c.arm is Arm.TREATED]
     at_risk = sum(c.amount_paise for c in cases)
@@ -144,6 +145,7 @@ def summary(batch_id: str) -> dict[str, Any]:
             "gross": rupees(overall.treated.amount_recovered),
             "incremental_paise": overall.incremental_paise,
             "incremental": rupees(overall.incremental_paise),
+            "incremental_ci": rupees(overall.incremental_ci_paise),
             "action_cost_paise": b.result.action_cost,
             "action_cost": rupees(b.result.action_cost),
             "net_paise": overall.incremental_paise - b.result.action_cost,
