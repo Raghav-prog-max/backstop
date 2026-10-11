@@ -129,6 +129,38 @@ Prefer not to install? Both work from a clean checkout with the source path set:
 PYTHONPATH=src python -m backstop.runner --cases 6000 --days 14
 ```
 
+## Does it survive a world it was not tuned in?
+
+The simulator's constants were hand-calibrated by the same person who wrote the
+agent, so a lift measured only there is a fact about this repository. `robustness`
+re-runs the batch in worlds that are deliberately wrong — customers who mostly fix
+themselves, actions that half work, templates with no real differences for the
+planner to find, buyers who break promises, customers who tire and leave twice as
+fast, and all of it at once:
+
+```bash
+python -m backstop.robustness --seeds 3
+```
+
+```
+  world                 mean lift   worst   sig   c/rec  what changed
+
+  calibrated               +24.7   +22.3   3/3    1.49  the tuned world the numbers were quoted in
+  self-heal x1.6           +17.1   +16.3   3/3    1.31  most cases fix themselves; little left to attribute
+  self-heal x0.5           +28.3   +27.7   3/3    2.23  almost nothing self-heals; the holdout recovers rarely
+  actions x0.5             +13.7   +12.6   3/3    2.02  everything the agent does works half as well
+  flat templates           +25.6   +23.6   3/3    1.56  every template identical; nothing for the planner to learn
+  promises x0.5            +22.9   +22.3   3/3    1.56  buyers name dates and break them
+  fragile customers        +24.0   +22.7   3/3    1.51  contact fatigue and opt-outs twice as fast
+  hostile                  +15.5   +12.4   3/3    1.45  several at once, all unfavourable
+```
+
+Significantly positive in every seed of all eight worlds. It moves where it should:
++17 pp when most cases recover on their own and there is little left to attribute,
++14 pp when everything the agent does works half as well. Add `--transfer` to carry
+a table the planner learned in the calibrated world into the others, which is the
+production question of whether yesterday's lesson survives the world shifting.
+
 ## The reframe
 
 The obvious build for this track is an LLM that writes better dunning emails. None of
