@@ -31,21 +31,33 @@ That batch, on the default seed, reports:
 HEADLINE
   cases in batch                     6,000
   amount at risk            Rs 66,104,941.86
-  recovered gross (treated) Rs 29,484,034.20
-  recovered incremental     Rs 6,760,207.23   <- attributable
-  action cost                Rs 158,450.50
-  net                       Rs 6,601,756.73
+  recovered gross (treated) Rs 24,448,153.63
+  recovered incremental     Rs 2,818,352.66   <- attributable
+  action cost                Rs 127,666.00
+  net                       Rs 2,690,686.66
 
 LIFT vs UNTOUCHED HOLDOUT
-  treated   n= 5,420   recovery  53.4%
-  holdout   n=   580   recovery  27.6%
-  lift      +25.8 pp  +/- 3.9  (significant at 95%)
+  treated   n= 5,420   recovery  51.9%
+  holdout   n=   580   recovery  25.3%
+  lift      +26.6 pp  +/- 3.8  (significant at 95%)
 ```
 
 Gross credits the agent with everything the treated arm recovered; only the gap over
 the untouched holdout is attributable, and that gap is the number the system is judged
-on. It is not a seed artefact — `--seed 7` and `--seed 99` give +26.2 and +27.8 pp on
-the same batch size.
+on. The lift holds across seeds (+26.2 pp averaged over three); the rupee figure does
+not, because it divides by a 580-case holdout with a long tail of invoice sizes — read
+the percentage, not the crore.
+
+The planner begins each batch knowing nothing about what its actions are worth, and
+pays for that education as it goes. `--actions table.json` keeps what it learned:
+
+```bash
+python -m backstop.runner --cases 6000 --days 14 --actions table.json
+```
+
+A table carried from two earlier batches beats the hand-set constants it replaced on
+every measure — +27.6 pp lift, Rs 2.92 cr gross, 1.18 contacts per recovery and 7
+opt-outs, against +26.6 pp, Rs 2.80 cr, 1.43 and 43.
 
 Add `--html why_not.html` to also write the **Why not** view — a self-contained page
 (no server, no CDN, no build step) listing every case the policy engine declined to
@@ -230,6 +242,20 @@ every day, so a case that has not recovered yet is censored rather than counted 
 lost, and every policy decision is priced by the posterior as it stands that morning.
 The `policy_decided` row records the probability used and whether it came from the
 cohort or the opening prior.
+
+**The planner is told nothing about what works.** There is no table of action uplifts
+in the source, because any such table here would have been written by the same person
+who wrote the simulator, and a reviewer could not separate skill from foreknowledge.
+A Beta posterior per `(case type, cause, action, template, stage)` learns it from
+dispatched outcomes instead, Thompson sampling picks among the draws, and the batch
+report prints the table it ended with. Stage is how many contacts the case has already
+had, which is how the planner works out for itself that a fifth message is not a
+first one. See `planner/learning.py`.
+
+**A contact is charged for the customers it loses.** The opt-out hazard is learned per
+stage and priced at `optout_lifetime_multiple` times the amount on the case. Restraint
+the agent arrived at itself beats restraint imposed on it, because PR-03's cap cannot
+know which message was the one too many.
 
 **Timing beats copy.** Retrying an `insufficient_funds` decline the day after salary
 credit is a larger lever than any message rewrite, so `wait(until)` is a first-class

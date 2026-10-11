@@ -4,9 +4,16 @@ Timing is the larger lever: retrying an insufficient-funds decline the day after
 salary credit beats any rewrite of the message that accompanies it. So `wait` is a
 first-class action and it is the default one.
 
-The epsilon exploration is not decoration — it generates the variance the measurement
-layer needs in order to attribute anything. A purely greedy planner produces a system
-that cannot explain its own results.
+What each action is worth is **learned**, not asserted: the score asks
+[`ActionModel`](learning.py) for a posterior draw on this action for this kind of
+case, and every dispatched result updates it. Nothing in this module encodes how the
+simulator behaves, so the lift the report prints is not partly the author's prior
+knowledge of the world the agent is being graded in.
+
+The exploration is not decoration — Thompson sampling, plus a small epsilon for the
+actions no case has reached yet, generates the variance the measurement layer needs in
+order to attribute anything. A purely greedy planner produces a system that cannot
+explain its own results.
 """
 
 from __future__ import annotations
@@ -19,14 +26,63 @@ from ..diagnosis.taxonomy import NO_RETRY_CAUSES
 from ..domain.case import Case
 from ..domain.types import CaseType, CauseClass, Channel, MessageClass
 from ..policy.config import PolicyConfig
+from ..policy.rules import CONTACT_ACTIONS
 from .actions import Action, ActionKind
+from .learning import ActionModel, ArmKey
 
 MESSAGE_TEMPLATES = ("plain_reminder", "one_tap_link", "value_reminder")
+
+# Actions whose outcome the model learns from. `wait` is never dispatched, and
+# `pre_debit_notice` is a compliance step scored by the debit it unlocks — it always
+# lands, so an arm for it would learn nothing.
+LEARNABLE = frozenset({
+    ActionKind.RETRY_PAYMENT,
+    ActionKind.REQUEST_REAUTH_LINK,
+    ActionKind.SEND_MESSAGE,
+    ActionKind.VOICE_CALL,
+    ActionKind.OFFER_INSTALLMENT,
+    ActionKind.REQUEST_PROMISE_TO_PAY,
+})
+
+# Escalation is deliberately not an arm. The only way an escalated case comes back is
+# the customer paying on its own, so an arm for it would learn the self-heal rate and
+# call it the value of hiring a human — and then buy more of the most expensive action
+# in the catalogue. It stays a fallback with a stated value, priced against its cost
+# like everything else.
+ESCALATION_VALUE = 0.30
+
+# A promise is worth P(the buyer names a date) x P(the buyer keeps it), and those two
+# are learned apart. Scoring the ask on dates obtained alone is the "a promise is not
+# a recovery" error in bandit form; waiting for the date to fall due before crediting
+# anything is worse, because the refusals land immediately and the kept promises land
+# a week later, so the arm starves before its wins arrive.
+PROMISE_KEPT = "promise_kept"
+
+# The other thing a contact can do: make the customer leave. Learned per stage, like
+# everything else, and charged against the action that risks it. Without this the
+# planner reads a 5%-per-message recovery rate as a licence to keep sending, buys its
+# recoveries with opt-outs, and the only thing standing between it and the customer
+# is PR-03's cap. Restraint the agent worked out for itself beats restraint imposed
+# on it, because the cap cannot know which message was the one too many.
+OPT_OUT = "opt_out"
 
 # A message about a payment that already failed on an existing agreement is a service
 # message. A nudge to come back and complete an abandoned cart is an inducement to
 # transact, and is promotional.
 PROMOTIONAL_CASE_TYPES = frozenset({CaseType.CHECKOUT_ABANDONMENT})
+
+
+# How far into a case an action falls, capped so the tail stays dense enough to learn
+# from. A third message and a sixth are both "late".
+STAGE_CAP = 3
+
+
+def _stage(case: Case, action: Action) -> str:
+    if action.kind in CONTACT_ACTIONS:
+        return str(min(case.contacts_total, STAGE_CAP))
+    if action.kind is ActionKind.RETRY_PAYMENT:
+        return f"r{min(case.retries_used, STAGE_CAP)}"
+    return ""
 
 
 def message_class_for(case: Case) -> MessageClass:
@@ -40,9 +96,11 @@ def message_class_for(case: Case) -> MessageClass:
 class Planner:
     def __init__(self, epsilon: float = 0.1, rng: random.Random | None = None,
                  mandate_notice_hours: int | None = None,
-                 max_retries: int | None = None) -> None:
+                 max_retries: int | None = None,
+                 actions: ActionModel | None = None) -> None:
         self.epsilon = epsilon
         self.rng = rng or random.Random(0)
+        self.actions = actions if actions is not None else ActionModel()
         # PR-05's lead time and PR-04's merchant budget, read from the policy config
         # rather than restated here.
         cfg = PolicyConfig()
@@ -51,6 +109,7 @@ class Planner:
             else cfg.mandate_notice_hours
         )
         self.max_retries = max_retries if max_retries is not None else cfg.max_retries
+        self._cfg = cfg
 
     def next_action(self, case: Case, dx: Diagnosis, now: datetime) -> Action:
         candidates = self._candidates(case, dx, now)
@@ -165,23 +224,87 @@ class Planner:
                            max(now + self.mandate_notice, dx.retry_window_start))
             return self._score(retry, case, dx, now)
 
-        uplift = _UPLIFT.get(action.kind, 0.02)
+        if action.kind is ActionKind.ESCALATE_HUMAN:
+            uplift = ESCALATION_VALUE
+        elif action.kind is ActionKind.REQUEST_PROMISE_TO_PAY:
+            # Dates obtained, discounted by how often a date is honoured.
+            uplift = (self.actions.sample(self.arm_for(case, dx, action), self.rng)
+                      * self.actions.sample(self.keep_arm_for(case, dx), self.rng))
+        elif action.kind in LEARNABLE:
+            # A draw from what this action has actually done on cases like this one.
+            uplift = self.actions.sample(self.arm_for(case, dx, action), self.rng)
+        else:
+            uplift = 0.02
+
         if action.kind is ActionKind.RETRY_PAYMENT:
             # A retry inside its window is worth far more than one outside it.
             in_window = action.fire_at >= dx.retry_window_start
             uplift *= 1.0 if in_window else 0.25
 
-        value = case.amount_paise * dx.recoverability * uplift
+        # Net of what the action costs to take. Without this the planner happily
+        # spends a 250-rupee human handover to chase 40 rupees and leaves PR-06 to
+        # catch it — a stopping rule is a backstop, not an objective.
+        value = case.amount_paise * dx.recoverability * uplift - self._cost(case, action)
+        if action.kind in CONTACT_ACTIONS:
+            # A customer who opts out takes the rest of the case with them. Posterior
+            # mean, not a draw: optimism belongs on the upside, not on the harm.
+            p_out = self.actions.estimate(self.opt_out_arm_for(case, dx, action))
+            lost = case.amount_paise * (dx.recoverability + self._cfg.optout_lifetime_multiple)
+            value -= p_out * lost
         delay_days = max((action.fire_at - now).days, 0)
         return value / (1.0 + 0.05 * delay_days)
 
+    def _cost(self, case: Case, action: Action) -> float:
+        """What the action costs, in the same terms PR-06 uses.
 
-_UPLIFT: dict[ActionKind, float] = {
-    ActionKind.RETRY_PAYMENT: 0.35,
-    ActionKind.REQUEST_REAUTH_LINK: 0.22,
-    ActionKind.SEND_MESSAGE: 0.12,
-    ActionKind.VOICE_CALL: 0.20,
-    ActionKind.OFFER_INSTALLMENT: 0.18,
-    ActionKind.REQUEST_PROMISE_TO_PAY: 0.28,
-    ActionKind.ESCALATE_HUMAN: 0.30,
-}
+        The second term is the one that matters: every contact already on the case
+        makes the next one dearer, because a customer's patience is not a renewable
+        resource. A planner that prices only the send fee learns to buy recoveries
+        with messages, and hands the report a rising contacts-per-recovery.
+        """
+        cost = float(self._cfg.cost_of(action.kind.value))
+        if action.kind in CONTACT_ACTIONS:
+            cost += case.contacts_total * self._cfg.goodwill_cost_per_contact_paise
+        return cost
+
+    def arm_for(self, case: Case, dx: Diagnosis, action: Action) -> ArmKey:
+        """The arm this action falls under. The runner holds on to it for the actions
+        that are only settled days later."""
+        return self.actions.key(case.case_type.value, dx.cause_class.value,
+                                action.kind.value, action.template,
+                                _stage(case, action))
+
+    _arm = arm_for
+
+    def opt_out_arm_for(self, case: Case, dx: Diagnosis, action: Action) -> ArmKey:
+        """How often a contact like this one, this late, ends the relationship."""
+        return self.actions.key(case.case_type.value, dx.cause_class.value,
+                                OPT_OUT, action.kind.value, _stage(case, action))
+
+    def keep_arm_for(self, case: Case, dx: Diagnosis) -> ArmKey:
+        """The companion arm: of the dates this kind of buyer gives, how many hold."""
+        return self.actions.key(case.case_type.value, dx.cause_class.value,
+                                PROMISE_KEPT, None)
+
+    def observe(self, case: Case, dx: Diagnosis, action: Action, *, success: bool) -> None:
+        """Record what a dispatched action did, as soon as its result is in.
+
+        Success means the action did what it is for: the payment was captured, or the
+        buyer named a date. Whether that date is then honoured is the separate
+        `promise_kept` arm, settled when it falls due.
+        """
+        if action.kind not in LEARNABLE:
+            return
+        self.actions.observe(self.arm_for(case, dx, action), success)
+
+    def observe_contact(self, case: Case, dx: Diagnosis, action: Action,
+                        *, opted_out: bool) -> None:
+        """Whether this contact cost us the customer. Called with every dispatched
+        contact, before the opt-out is allowed to influence the next decision."""
+        if action.kind not in CONTACT_ACTIONS:
+            return
+        self.actions.observe(self.opt_out_arm_for(case, dx, action), opted_out)
+
+    def settle(self, arm: ArmKey, *, success: bool) -> None:
+        """Credit an arm whose outcome only arrived later: a promise kept or broken."""
+        self.actions.observe(arm, success)
