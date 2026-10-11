@@ -39,14 +39,18 @@ def message_class_for(case: Case) -> MessageClass:
 
 class Planner:
     def __init__(self, epsilon: float = 0.1, rng: random.Random | None = None,
-                 mandate_notice_hours: int | None = None) -> None:
+                 mandate_notice_hours: int | None = None,
+                 max_retries: int | None = None) -> None:
         self.epsilon = epsilon
         self.rng = rng or random.Random(0)
-        # PR-05's lead time, read from the policy config rather than restated here.
+        # PR-05's lead time and PR-04's merchant budget, read from the policy config
+        # rather than restated here.
+        cfg = PolicyConfig()
         self.mandate_notice = timedelta(
             hours=mandate_notice_hours if mandate_notice_hours is not None
-            else PolicyConfig().mandate_notice_hours
+            else cfg.mandate_notice_hours
         )
+        self.max_retries = max_retries if max_retries is not None else cfg.max_retries
 
     def next_action(self, case: Case, dx: Diagnosis, now: datetime) -> Action:
         candidates = self._candidates(case, dx, now)
@@ -77,10 +81,13 @@ class Planner:
             if case.case_type is CaseType.MANDATE_LAPSE:
                 if case.mandate_notice_sent_at is None:
                     # No debit without notice. Proposing the retry anyway would only
-                    # be deferred by PR-05, forever; the notice is the next step.
-                    out.append(Action(ActionKind.PRE_DEBIT_NOTICE, now, channel=Channel.SMS,
-                                      template="pre_debit_notice",
-                                      message_class=MessageClass.SERVICE))
+                    # be deferred by PR-05, forever; the notice is the next step —
+                    # unless there is no debit left to notice about, in which case
+                    # sending one spends money on a debit PR-04 will deny.
+                    if case.retries_used < self.max_retries:
+                        out.append(Action(ActionKind.PRE_DEBIT_NOTICE, now,
+                                          channel=Channel.SMS, template="pre_debit_notice",
+                                          message_class=MessageClass.SERVICE))
                 else:
                     fire_at = max(fire_at, case.mandate_notice_sent_at + self.mandate_notice)
                     out.append(Action(ActionKind.RETRY_PAYMENT, fire_at))

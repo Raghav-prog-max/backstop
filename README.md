@@ -25,6 +25,28 @@ python -m pip install -e ".[dev]"
 python -m backstop.runner --cases 6000 --days 14
 ```
 
+That batch, on the default seed, reports:
+
+```
+HEADLINE
+  cases in batch                     6,000
+  amount at risk            Rs 66,104,941.86
+  recovered gross (treated) Rs 29,484,034.20
+  recovered incremental     Rs 6,760,207.23   <- attributable
+  action cost                Rs 158,450.50
+  net                       Rs 6,601,756.73
+
+LIFT vs UNTOUCHED HOLDOUT
+  treated   n= 5,420   recovery  53.4%
+  holdout   n=   580   recovery  27.6%
+  lift      +25.8 pp  +/- 3.9  (significant at 95%)
+```
+
+Gross credits the agent with everything the treated arm recovered; only the gap over
+the untouched holdout is attributable, and that gap is the number the system is judged
+on. It is not a seed artefact — `--seed 7` and `--seed 99` give +26.2 and +27.8 pp on
+the same batch size.
+
 Add `--html why_not.html` to also write the **Why not** view — a self-contained page
 (no server, no CDN, no build step) listing every case the policy engine declined to
 work, and the exact rule that stopped it:
@@ -150,17 +172,21 @@ because the policy engine records every evaluation whether or not it allowed any
   signal, diagnosis, every policy decision with the rules that fired, every dispatch,
   the outcome.
 
-A representative replay, straight out of the view:
+A representative replay, straight out of the view — one e-mandate case, with the
+statutory notice before each debit and the cohort posterior re-priced each day:
 
 ```
-2026-09-02 08:29  detected        amount_paise=2369936 arm=treated
-2026-09-02 08:29  diagnosed       cause=do_not_honour tier=T1 recoverability=0.3
-2026-09-02 19:00  policy_decided  retry_payment -> defer  PR-05: pre-debit notice
-2026-09-03 19:00  policy_decided  retry_payment -> defer  PR-05: pre-debit notice
-2026-09-04 19:00  policy_decided  retry_payment -> allow
-2026-09-04 19:00  action_result   ok=False  no response
-2026-09-05 19:00  action_result   ok=False  no response
-2026-09-06 19:00  action_result   ok=True   recovered_paise=2369936
+2026-09-01 13:52  detected        amount_paise=59657 arm=treated
+2026-09-01 13:52  diagnosed       cause=issuer_unavailable tier=T1 recoverability=0.65
+2026-09-01 19:00  policy_decided  pre_debit_notice -> allow  p=0.65 (prior)
+2026-09-01 19:00  action_result   pre_debit_notice  ok=True   delivered
+2026-09-02 19:00  policy_decided  retry_payment -> allow  p=0.6265 (T2)
+2026-09-02 19:00  action_result   retry_payment  ok=False  no response
+2026-09-03 19:00  policy_decided  pre_debit_notice -> allow  p=0.5151 (T2)
+2026-09-03 19:00  action_result   pre_debit_notice  ok=True   delivered
+2026-09-04 19:00  policy_decided  retry_payment -> allow  p=0.6548 (T2)
+2026-09-04 19:00  action_result   retry_payment  ok=True   recovered_paise=59657
+2026-09-04 19:00  outcome         recovered
 ```
 
 Exports are capped (`--html-rows`, default 2000; `--html-timelines`, default 250) and
@@ -188,6 +214,19 @@ outranks the taxonomy and the cohort model: MAC 03 means never retry (and reatte
 is a per-attempt fee), MAC 01 means fetch a new credential rather than retry, and MAC
 24-30 give the retry time directly. An unrecognised code yields *no advice* rather than
 a guess. See `diagnosis/advice.py`.
+
+**A mandate debit is preceded by its own notice.** The RBI pre-debit notification is
+an action the agent sends and the ledger records, not a flag someone sets:
+`pre_debit_notice` goes out first, PR-05 holds the debit until it has been delivered
+for 24h, and one notice covers one debit — a second attempt needs a second notice. No
+notice is sent once the retry budget is spent, because PR-04 would deny the debit it
+was paying for.
+
+**T2 learns during the batch.** Each open case contributes a case-day to its cohort
+every day, so a case that has not recovered yet is censored rather than counted as
+lost, and every policy decision is priced by the posterior as it stands that morning.
+The `policy_decided` row records the probability used and whether it came from the
+cohort or the opening prior.
 
 **Timing beats copy.** Retrying an `insufficient_funds` decline the day after salary
 credit is a larger lever than any message rewrite, so `wait(until)` is a first-class

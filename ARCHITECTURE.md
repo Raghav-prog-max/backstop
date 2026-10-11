@@ -381,9 +381,9 @@ reported number is the difference.
 ```mermaid
 flowchart LR
     B["At-risk cases<br/>randomised at intake"]
-    T["Treated · 90%<br/>55.0% recovered"]
-    H["Holdout · 10%<br/>never touched<br/>24.3% recovered"]
-    L["Attributable lift<br/>+30.7pp ± 3.7<br/>gross would claim 55.0%"]
+    T["Treated · 90%<br/>53.4% recovered"]
+    H["Holdout · 10%<br/>never touched<br/>27.6% recovered"]
+    L["Attributable lift<br/>+25.8pp ± 3.9<br/>gross would claim 53.4%"]
     B --> T
     B --> H
     T --> L
@@ -442,17 +442,21 @@ the ledger.
 python -m backstop.runner --cases 6000 --days 14 --html why_not.html
 ```
 
-A representative replay, straight out of the view:
+A representative replay, straight out of the view — one e-mandate case, with the
+statutory notice before each debit and the cohort posterior re-priced each day:
 
 ```
-2026-09-02 08:29  detected        amount_paise=2369936 arm=treated
-2026-09-02 08:29  diagnosed       cause=do_not_honour tier=T1 recoverability=0.3
-2026-09-02 19:00  policy_decided  retry_payment -> defer  PR-05: pre-debit notice
-2026-09-03 19:00  policy_decided  retry_payment -> defer  PR-05: pre-debit notice
-2026-09-04 19:00  policy_decided  retry_payment -> allow
-2026-09-04 19:00  action_result   ok=False  no response
-2026-09-05 19:00  action_result   ok=False  no response
-2026-09-06 19:00  action_result   ok=True   recovered_paise=2369936
+2026-09-01 13:52  detected        amount_paise=59657 arm=treated
+2026-09-01 13:52  diagnosed       cause=issuer_unavailable tier=T1 recoverability=0.65
+2026-09-01 19:00  policy_decided  pre_debit_notice -> allow  p=0.65 (prior)
+2026-09-01 19:00  action_result   pre_debit_notice  ok=True   delivered
+2026-09-02 19:00  policy_decided  retry_payment -> allow  p=0.6265 (T2)
+2026-09-02 19:00  action_result   retry_payment  ok=False  no response
+2026-09-03 19:00  policy_decided  pre_debit_notice -> allow  p=0.5151 (T2)
+2026-09-03 19:00  action_result   pre_debit_notice  ok=True   delivered
+2026-09-04 19:00  policy_decided  retry_payment -> allow  p=0.6548 (T2)
+2026-09-04 19:00  action_result   retry_payment  ok=True   recovered_paise=59657
+2026-09-04 19:00  outcome         recovered
 ```
 
 Note that `deny` and `defer` rules stop *actions*, not cases, so their "cases ended"

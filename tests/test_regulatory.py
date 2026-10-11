@@ -250,3 +250,20 @@ def test_every_mandate_debit_in_a_batch_follows_its_own_delivered_notice():
                 assert e.occurred_at - notice_at >= timedelta(hours=24)
                 notice_at = None  # one notice, one debit
     assert debits > 0
+
+
+def test_no_notice_is_sent_once_the_retry_budget_is_spent():
+    """A notice whose debit PR-04 will deny is money spent for nothing."""
+    from backstop.diagnosis.cohort import CohortModel
+    from backstop.diagnosis.engine import DiagnosisEngine
+    from backstop.planner.planner import Planner
+
+    planner = Planner(epsilon=0.0)
+    case = make_case(case_type=CaseType.MANDATE_LAPSE, instrument="upi_mandate",
+                     failure_code="insufficient_funds", created_at=NOW - timedelta(days=4))
+    dx = DiagnosisEngine(CohortModel()).diagnose(case)
+    case.retries_used = PolicyConfig().max_retries
+
+    kinds = {a.kind for a in planner._candidates(case, dx, NOW)}
+    assert ActionKind.PRE_DEBIT_NOTICE not in kinds
+    assert ActionKind.RETRY_PAYMENT not in kinds
