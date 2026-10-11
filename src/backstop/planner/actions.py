@@ -12,6 +12,10 @@ from ..domain.types import Channel, MessageClass
 class ActionKind(str, Enum):
     WAIT = "wait"
     RETRY_PAYMENT = "retry_payment"
+    # e-mandate only: the statutory notice that a debit is coming. PR-05 holds the
+    # retry until one has been delivered and the lead time has passed. One notice
+    # covers one debit attempt.
+    PRE_DEBIT_NOTICE = "pre_debit_notice"
     SWITCH_INSTRUMENT = "switch_instrument"
     REQUEST_REAUTH_LINK = "request_reauth_link"
     SEND_MESSAGE = "send_message"

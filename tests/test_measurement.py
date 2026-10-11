@@ -97,3 +97,65 @@ def test_diagnosis_reports_the_tier_it_actually_used():
     for _ in range(10):
         model.observe(key, True)
     assert engine.diagnose(c).tier == "T2"
+
+
+def test_open_cases_are_censored_not_counted_as_lost_or_won():
+    """Mid-batch, the fast recoveries are in and the slow ones are still open.
+
+    Counting only resolved cases would read that as near-certain recovery. The daily
+    hazard sees the open cases as days survived, and lands near the truth.
+    """
+    import random
+
+    horizon, stop_at, daily = 14, 5, 0.05
+    truth = 1 - (1 - daily) ** horizon  # ~0.51
+    rng = random.Random(3)
+    model = CohortModel(min_n=5, horizon_days=horizon)
+    key = model.key("SBI", "card", "500_2k", 10)
+    for i in range(400):
+        for _day in range(stop_at):  # the batch is only five days in
+            recovered = rng.random() < daily
+            model.observe(key, recovered, case_id=f"c{i}")
+            if recovered:
+                break
+    post = model.posterior(key, 0.30)
+    assert post.n == 400  # cases, not case-days
+    assert abs(post.mean - truth) < 0.08
+
+
+def test_refresh_reprices_without_asking_the_model_again():
+    calls = []
+
+    class FakeLLM:
+        def diagnose(self, case, free_text):
+            calls.append(free_text)
+            from backstop.diagnosis.engine import Evidence
+            return CauseClass.INSUFFICIENT_FUNDS, [Evidence("free_text", "no balance", "T3")]
+
+    model = CohortModel(min_n=5)
+    engine = DiagnosisEngine(model, llm=FakeLLM())
+    c = case("c9", Arm.TREATED, False)
+    c.failure_code = "payment_failed"
+    dx = engine.diagnose(c, "no balance")
+    assert len(calls) == 1 and dx.tier == "T3"
+
+    key = model.key(c.issuer, c.instrument, c.amount_band(), c.created_at.hour)
+    for i in range(10):
+        model.observe(key, False, case_id=f"q{i}")
+    fresh = engine.refresh(c, dx)
+    assert len(calls) == 1
+    assert fresh.cause_class is CauseClass.INSUFFICIENT_FUNDS
+    assert fresh.tier == "T2" and fresh.recoverability < dx.recoverability
+    assert any(e.tier == "T3" for e in fresh.evidence)  # the model's quote survives
+
+
+def test_runner_prices_later_decisions_with_the_learned_cohort():
+    from backstop.domain.events import EventKind
+    from backstop.runner import run
+
+    result = run(2000, 10, 0.1, seed=5)
+    assert result.decisions_priced_by_t2 > 0
+    priced = [e.payload for e in result.ledger.all_events()
+              if e.kind is EventKind.POLICY_DECIDED]
+    assert all("p_recover" in p and "priced_by" in p for p in priced)
+    assert any(p["priced_by"] == "T2" for p in priced)

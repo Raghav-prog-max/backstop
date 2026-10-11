@@ -67,12 +67,12 @@ def test_attempting_can_cycle_back_to_planned():
 
 
 def test_outbox_never_dispatches_the_same_intent_twice():
-    """A crash between 'decided to send' and 'sent' must not double-contact anyone."""
+    """Replaying a completed intent returns what happened then and sends nothing."""
     sent: list[str] = []
 
     class Backend:
-        def execute(self, case, action, now):
-            sent.append(str(action))
+        def execute(self, case, action, now, idem_key):
+            sent.append(idem_key)
             return ActionResult(ok=False, detail="no response")
 
     ledger = InMemoryLedger()
@@ -80,7 +80,49 @@ def test_outbox_never_dispatches_the_same_intent_twice():
     case = make_case()
     action = Action(ActionKind.SEND_MESSAGE, NOW, template="one_tap_link")
 
-    assert outbox.queue_and_dispatch(case, action, 1, NOW) is not None
-    assert outbox.queue_and_dispatch(case, action, 1, NOW) is None  # replay
+    first = outbox.queue_and_dispatch(case, action, 1, NOW)
+    replay = outbox.queue_and_dispatch(case, action, 1, NOW)
     assert len(sent) == 1
     assert outbox.deduped == 1
+    assert (replay.ok, replay.detail) == (first.ok, first.detail)
+
+
+@pytest.mark.parametrize("ledger", [InMemoryLedger(), SqliteLedger()])
+def test_outbox_redispatches_an_intent_that_crashed_before_sending(ledger):
+    """Intent committed, process died before dispatch: the action must not be lost."""
+    sent: list[str] = []
+
+    class Crash(Exception):
+        pass
+
+    class FlakyBackend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, case, action, now, idem_key):
+            self.calls += 1
+            if self.calls == 1:
+                raise Crash()
+            sent.append(idem_key)
+            return ActionResult(ok=True, detail="recovered", recovered_paise=100_000,
+                                promise_until=NOW)
+
+    case = make_case()
+    action = Action(ActionKind.RETRY_PAYMENT, NOW)
+    outbox = Outbox(ledger, FlakyBackend())
+
+    with pytest.raises(Crash):
+        outbox.queue_and_dispatch(case, action, 1, NOW)
+    kinds = [e.kind for e in ledger.events_for("c1")]
+    assert kinds == [EventKind.INTENT_QUEUED]  # intent recorded, no result
+
+    result = outbox.queue_and_dispatch(case, action, 1, NOW)
+    assert result.recovered_paise == 100_000
+    assert outbox.redispatched == 1
+    # Re-sent under the key the first attempt was queued with.
+    assert sent == [action.idem_key("c1", 1)]
+
+    # And a third call is a completed replay, reconstructed from the ledger.
+    again = outbox.queue_and_dispatch(case, action, 1, NOW)
+    assert len(sent) == 1
+    assert again.recovered_paise == 100_000 and again.promise_until == NOW

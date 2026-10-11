@@ -143,7 +143,7 @@ rule closes its budget.
 |---|---|---|---|
 | **T0** | [Network advice](src/backstop/diagnosis/advice.py) | Mastercard Merchant Advice Code, Visa decline category — read off the decline response | Retry eligibility, and often the retry time itself |
 | **T1** | [Decline-code taxonomy](src/backstop/diagnosis/taxonomy.py) | insufficient funds · expired instrument · issuer unavailable · 3DS abandonment · risk decline · `do_not_honour` | Cause class + coarse recoverability |
-| **T2** | [Cohort posterior](src/backstop/diagnosis/cohort.py) | Beta–Bernoulli over `(issuer × instrument × amount band × hour)` | P(recover), with sample size |
+| **T2** | [Cohort posterior](src/backstop/diagnosis/cohort.py) | Beta–Bernoulli on the daily recovery hazard over `(issuer × instrument × amount band × hour)`, re-read before every decision | P(recover), with sample size |
 | **T3** | [Claude, schema-constrained](src/backstop/diagnosis/llm.py) | Unstructured residual only — customer replies, support notes, forwarded bank SMS, on cases whose gateway code maps to nothing | Same `Diagnosis` struct; verbatim evidence spans required, ungrounded answers discarded |
 
 ### T0 outranks everything
@@ -168,6 +168,17 @@ decline in the book, and treating it as a single class is how retry strategies e
 their reputation for spamming issuers. Backstop splits it by cohort behaviour rather
 than by code — if a given issuer's `do_not_honour` cohort recovers on a T+2 retry,
 that is an empirical fact the posterior learns, not a rule anyone wrote.
+
+**T2 learns during the batch, and prices every decision.** Each open treated case
+contributes one case-day to its cohort per day — recovered that day or not — so a case
+still open mid-batch is censored rather than counted as lost, and the fast recoveries
+cannot make a cohort look certain before the slow ones have had time. Before each
+policy evaluation the diagnosis is re-priced against the current cohort
+(`DiagnosisEngine.refresh`); the cause and any model evidence are kept, only the
+posterior moves. The `policy_decided` row records the `p_recover` PR-06 judged and
+whether it came from a confident cohort or the prior. The tier used to *slice* the
+report stays the intake tier, because it has to mean the same thing for both arms and
+the holdout is never re-priced.
 
 **Non-negotiable:** every `Diagnosis` carries `evidence[]` pointing at raw event
 fields. One that cannot cite its inputs raises `EvidenceRequired` at construction —
@@ -306,6 +317,7 @@ default one. See [`planner/planner.py`](src/backstop/planner/planner.py).
 |---|---|
 | `wait(until)` | Nothing — the default. Doing nothing is always available. |
 | `retry_payment(at, instrument)` | PR-04, PR-05 |
+| `pre_debit_notice()` | e-mandate only. Sent before a debit is proposed; one notice covers one debit, and PR-05 holds the retry until it has been delivered for 24h |
 | `switch_instrument(to)` | Stored instrument + consent on file |
 | `request_reauth_link(ttl)` | One live link per case; a new one supersedes |
 | `send_message(channel, tmpl)` | PR-01, PR-02, PR-03 |
@@ -369,9 +381,9 @@ reported number is the difference.
 ```mermaid
 flowchart LR
     B["At-risk cases<br/>randomised at intake"]
-    T["Treated · 90%<br/>55.0% recovered"]
-    H["Holdout · 10%<br/>never touched<br/>24.3% recovered"]
-    L["Attributable lift<br/>+30.7pp ± 3.7<br/>gross would claim 55.0%"]
+    T["Treated · 90%<br/>53.4% recovered"]
+    H["Holdout · 10%<br/>never touched<br/>27.6% recovered"]
+    L["Attributable lift<br/>+25.8pp ± 3.9<br/>gross would claim 53.4%"]
     B --> T
     B --> H
     T --> L
@@ -430,17 +442,21 @@ the ledger.
 python -m backstop.runner --cases 6000 --days 14 --html why_not.html
 ```
 
-A representative replay, straight out of the view:
+A representative replay, straight out of the view — one e-mandate case, with the
+statutory notice before each debit and the cohort posterior re-priced each day:
 
 ```
-2026-09-02 08:29  detected        amount_paise=2369936 arm=treated
-2026-09-02 08:29  diagnosed       cause=do_not_honour tier=T1 recoverability=0.3
-2026-09-02 19:00  policy_decided  retry_payment -> defer  PR-05: pre-debit notice
-2026-09-03 19:00  policy_decided  retry_payment -> defer  PR-05: pre-debit notice
-2026-09-04 19:00  policy_decided  retry_payment -> allow
-2026-09-04 19:00  action_result   ok=False  no response
-2026-09-05 19:00  action_result   ok=False  no response
-2026-09-06 19:00  action_result   ok=True   recovered_paise=2369936
+2026-09-01 13:52  detected        amount_paise=59657 arm=treated
+2026-09-01 13:52  diagnosed       cause=issuer_unavailable tier=T1 recoverability=0.65
+2026-09-01 19:00  policy_decided  pre_debit_notice -> allow  p=0.65 (prior)
+2026-09-01 19:00  action_result   pre_debit_notice  ok=True   delivered
+2026-09-02 19:00  policy_decided  retry_payment -> allow  p=0.6265 (T2)
+2026-09-02 19:00  action_result   retry_payment  ok=False  no response
+2026-09-03 19:00  policy_decided  pre_debit_notice -> allow  p=0.5151 (T2)
+2026-09-03 19:00  action_result   pre_debit_notice  ok=True   delivered
+2026-09-04 19:00  policy_decided  retry_payment -> allow  p=0.6548 (T2)
+2026-09-04 19:00  action_result   retry_payment  ok=True   recovered_paise=59657
+2026-09-04 19:00  outcome         recovered
 ```
 
 Note that `deny` and `defer` rules stop *actions*, not cases, so their "cases ended"

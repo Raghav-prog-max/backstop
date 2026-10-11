@@ -121,9 +121,13 @@ class World:
             lat.fatigue += 0.25
         return kept
 
-    def execute(self, case: Case, action: Action, now: datetime) -> ActionResult:
+    def execute(self, case: Case, action: Action, now: datetime,
+                idem_key: str = "") -> ActionResult:
         if action.kind in (ActionKind.WAIT, ActionKind.CLOSE_CASE):
             return ActionResult(ok=True, detail="no-op")
+        if action.kind is ActionKind.PRE_DEBIT_NOTICE:
+            # A notice informs; it does not persuade. No recovery, no fatigue.
+            return ActionResult(ok=True, detail=f"{action} delivered")
 
         lat = self._latent[case.case_id]
 
